@@ -36,6 +36,7 @@
   const sizeOf = t => prefs.sizes[t] || TOOL[t].size;
   let penSeen = (() => { try { return localStorage.getItem('qd.pen') === '1'; } catch (e) { return false; } })();
   let lastShown = null;
+  let freshStart = true; // the app always opens at "Fit"; zoom is kept while turning pages
   let pending = null; // set right before navigating after a page turn: { side, noAnim }
 
   // run fn at most once per animation frame with the latest argument
@@ -212,7 +213,8 @@
     const book = h('div', { class: 'book', 'data-tool': tool }, h('div', { class: 'cover' }), spread, catTab, h('div', { class: 'ribbon' }));
     const wrap = h('div', { class: 'book-wrap' }, book);
     const moreBtn = h('button', { class: 'btn ghost more-paper', html: ic('plus') + '<span>Add more paper</span>', onclick: () => grow(GROW, true) });
-    scroller.append(wrap, moreBtn);
+    wrap.append(moreBtn);
+    scroller.append(wrap);
 
     /* ===== save plumbing ===== */
     function changed() {
@@ -508,29 +510,37 @@
       layout();
     }
     function layout() {
-      const aw = Math.max(240, scroller.clientWidth - 28 - 44), ah = Math.max(240, scroller.clientHeight - 24);
+      const vw = scroller.clientWidth, vh = scroller.clientHeight;
+      const aw = Math.max(240, vw - 28 - 44), ah = Math.max(240, vh - TOP_PAD - BOTTOM_PAD);
       const spreadW = 2 * W + 2 * COVER, singleW = W + 2 * COVER, bh = H0 + 2 * COVER;
       const fitSpread = Math.min(aw / spreadW, ah / bh);
       const mode = S.settings.layout || 'auto';
       const was = single;
       single = mode === 'single' || (mode !== 'spread' && (aw < ah * 0.9 || fitSpread < 0.42));
-      const fit = single ? Math.min(aw / singleW, ah / bh) : fitSpread;
-      scale = QD.clamp(fit * (prefs.zoom || 1), 0.15, 5);
-      const bw = single ? singleW : spreadW, bhh = page.height + 2 * COVER;
+      fit = single ? Math.min(aw / singleW, ah / bh) : fitSpread;
+      bookW = single ? singleW : spreadW;
+      bookH = page.height + 2 * COVER;
       book.classList.toggle('single', single);
-      book.style.width = bw + 'px';
-      book.style.height = bhh + 'px';
-      book.style.transform = `scale(${scale})`;
+      book.style.width = bookW + 'px';
+      book.style.height = bookH + 'px';
       spread.style.transform = single ? `translateX(${-side * W}px)` : '';
       spread.style.width = (single ? (side + 1) * W : 2 * W) + 'px';
-      sides.forEach((s, i) => s.el.classList.toggle('off', single && i !== side));
+      sides.forEach((x, i) => x.el.classList.toggle('off', single && i !== side));
       setupLive();
-      wrap.style.width = bw * scale + 'px';
-      wrap.style.height = bhh * scale + 'px';
-      root.style.setProperty('--nb-scale', scale);
+      rasterAt(fit * cam.z);
       placeCorners();
+      if (!camReady) {
+        camReady = true;
+        const b = bounds(cam.z);
+        cam.x = (b.x0 + b.x1) / 2;
+        cam.y = b.y1;
+      } else {
+        const b = bounds(cam.z);
+        cam.x = QD.clamp(cam.x, b.x0, b.x1);
+        cam.y = QD.clamp(cam.y, b.y0, b.y1);
+      }
+      applyCam();
       updateZoomUI();
-      rectCache = null;
       if (was !== single) { deselect(); commitSel(); }
     }
     function placeCorners() {
@@ -548,7 +558,8 @@
       if (user) {
         if (!page.draft) changed();
         QD.sfx('page');
-        scroller.scrollBy({ top: by * scale * 0.8, behavior: 'smooth' });
+        const b = bounds(cam.z);
+        animateCam({ x: cam.x, y: QD.clamp(cam.y - by * fit * cam.z * 0.8, b.y0, b.y1), z: cam.z }, 320);
       }
     }
     function autoGrow() {
@@ -568,12 +579,90 @@
     listen(book, 'animationend', dropRect);
     function pt(e) {
       const r = rectCache || (rectCache = spread.getBoundingClientRect());
-      return { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale, p: e.pressure || 0.5 };
+      const k = r.width / (single ? (side + 1) * W : 2 * W);
+      return { x: (e.clientX - r.left) / k, y: (e.clientY - r.top) / k, p: e.pressure || 0.5 };
     }
     const sideAt = x => (single ? side : x < W ? 0 : 1);
 
-    /* ===== zoom: buttons, pinch (two fingers), trackpad pinch / Ctrl+wheel ===== */
-    let pinch = null;
+    /* ===== camera: our own pan / zoom (exact finger tracking, momentum, soft edges) ===== */
+    // stage px = cam + world px * (fit * cam.z). The book is rasterised at scale Sr; while moving we
+    // only change a GPU transform on the wrapper, and re-rasterise once the camera comes to rest.
+    if (freshStart) { freshStart = false; prefs.zoom = 1; }
+    const cam = { x: 0, y: 0, z: QD.clamp(prefs.zoom || 1, 0.5, 4) };
+    let fit = 1, Sr = 1, bookW = 0, bookH = 0, camReady = false, camAnim = 0, gesture = null, pinch = null;
+    const EXTRA = 70; // room for the "add more paper" button
+    // keep the page clear of the floating palette (top) and the zoom pill / corners (bottom)
+    const TOP_PAD = 64, BOTTOM_PAD = 58;
+    const MINZ = 0.5, MAXZ = 4;
+    function rasterAt(sNew) {
+      Sr = QD.clamp(sNew, 0.15, 6);
+      scale = Sr;
+      book.style.transform = `scale(${Sr})`;
+      wrap.style.width = bookW * Sr + 'px';
+      wrap.style.height = bookH * Sr + EXTRA + 'px';
+      moreBtn.style.top = bookH * Sr + 16 + 'px';
+      root.style.setProperty('--nb-scale', Sr);
+    }
+    function bounds(z) {
+      const s2 = fit * z, vw = scroller.clientWidth, vh = scroller.clientHeight, pad = 20;
+      const cw = bookW * s2, ch = bookH * s2 + EXTRA * (s2 / Sr) * 0.5;
+      const fx = cw + 2 * pad <= vw, fy = ch + TOP_PAD + BOTTOM_PAD <= vh;
+      const yFit = TOP_PAD + Math.max(0, (vh - TOP_PAD - BOTTOM_PAD - ch) / 2);
+      return {
+        x0: fx ? (vw - cw) / 2 : vw - cw - pad, x1: fx ? (vw - cw) / 2 : pad,
+        y0: fy ? yFit : vh - ch - BOTTOM_PAD, y1: fy ? yFit : TOP_PAD,
+      };
+    }
+    function applyCam() {
+      wrap.style.transform = `translate3d(${cam.x}px, ${cam.y}px, 0) scale(${(fit * cam.z) / Sr})`;
+      rectCache = null;
+    }
+    const applySoon = rafThrottle(() => applyCam());
+    // once nothing moves: crisp re-raster at the final zoom, remember it
+    const settleRaster = QD.debounce(() => {
+      if (gesture || camAnim) return;
+      const sNow = fit * cam.z;
+      if (Math.abs(sNow - Sr) > 0.0005) { rasterAt(sNow); applyCam(); }
+      prefs.zoom = cam.z;
+      savePrefs();
+      updateZoomUI();
+    }, 140);
+    function stopCam() { if (camAnim) cancelAnimationFrame(camAnim); camAnim = 0; }
+    function animateCam(to, ms = 260, done) {
+      stopCam();
+      const from = { ...cam }, t0 = performance.now();
+      const step = now => {
+        const k = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+        cam.x = from.x + (to.x - from.x) * e; cam.y = from.y + (to.y - from.y) * e; cam.z = from.z + (to.z - from.z) * e;
+        applyCam();
+        if (k < 1) camAnim = requestAnimationFrame(step);
+        else { camAnim = 0; if (done) done(); settleRaster(); }
+      };
+      camAnim = requestAnimationFrame(step);
+    }
+    // zoom to z keeping stage point q fixed
+    function zoomAround(z, q, clampIt = true) {
+      const s0 = fit * cam.z, s1 = fit * z;
+      cam.x = q.x - (q.x - cam.x) * s1 / s0;
+      cam.y = q.y - (q.y - cam.y) * s1 / s0;
+      cam.z = z;
+      if (clampIt) { const b = bounds(z); cam.x = QD.clamp(cam.x, b.x0, b.x1); cam.y = QD.clamp(cam.y, b.y0, b.y1); }
+    }
+    // after a gesture: bring zoom and position back inside the limits, softly
+    function settle(anchor) {
+      let z = QD.clamp(cam.z, MINZ, MAXZ);
+      if (Math.abs(z - 1) < 0.05) z = 1;
+      const keep = { ...cam };
+      if (z !== cam.z && anchor) zoomAround(z, anchor, false);
+      const b = bounds(z);
+      const to = { x: QD.clamp(cam.x, b.x0, b.x1), y: QD.clamp(cam.y, b.y0, b.y1), z };
+      Object.assign(cam, keep);
+      if (Math.abs(to.x - cam.x) < 0.5 && Math.abs(to.y - cam.y) < 0.5 && Math.abs(to.z - cam.z) < 0.001) { cam.x = to.x; cam.y = to.y; cam.z = to.z; applyCam(); settleRaster(); return; }
+      animateCam(to, 240);
+    }
+    const rubber = (v, lo, hi) => (v < lo ? lo - Math.pow(lo - v, 0.8) : v > hi ? hi + Math.pow(v - hi, 0.8) : v);
+    const rubberZ = z => (z < MINZ ? MINZ * Math.pow(z / MINZ, 0.35) : z > MAXZ ? MAXZ * Math.pow(z / MAXZ, 0.35) : z);
+
     const zoomLabel = h('button', { class: 'zoom-label', title: 'Fit page to screen', onclick: () => zoomTo(1) });
     const layoutBtn = h('button', { class: 'jb', onclick: () => toggleLayout() });
     zoomCtl.append(
@@ -581,36 +670,33 @@
       zoomLabel,
       h('button', { class: 'jb', title: 'Zoom in', 'aria-label': 'Zoom in', html: ic('plus'), onclick: () => setZoom(1) }),
       h('span', { class: 'jb-sep' }), layoutBtn);
-    const zoomText = () => ((prefs.zoom || 1) === 1 ? 'Fit' : Math.round(prefs.zoom * 100) + '%');
-    // no big overlay while zooming — just keep the small corner chip in sync
-    function showHud() { updateZoomUI(); }
-    // zoom so the point under (cx, cy) stays put
-    function zoomAt(z, cx, cy) {
-      z = QD.clamp(z, 0.5, 4);
-      const r0 = book.getBoundingClientRect(), s0 = scale;
-      const px = (cx - r0.left) / s0, py = (cy - r0.top) / s0;
-      prefs.zoom = Math.abs(z - 1) < 0.03 ? 1 : z;
-      layout();
-      const r1 = book.getBoundingClientRect();
-      scroller.scrollLeft += r1.left - (cx - px * scale);
-      scroller.scrollTop += r1.top - (cy - py * scale);
-      showHud();
-    }
+    const zoomText = () => (Math.abs(cam.z - 1) < 0.01 ? 'Fit' : Math.round(cam.z * 100) + '%');
     function zoomTo(z) {
-      const r = scroller.getBoundingClientRect();
-      zoomAt(z, r.left + r.width / 2, r.top + r.height / 2);
-      if (z === 1) scroller.scrollTo({ left: 0, top: 0 });
-      savePrefs();
+      z = QD.clamp(z, MINZ, MAXZ);
+      const vw = scroller.clientWidth, vh = scroller.clientHeight;
+      const keep = { ...cam };
+      if (z === 1) {
+        cam.z = 1;
+        const b = bounds(1);
+        const to = { x: (b.x0 + b.x1) / 2, y: b.y1, z: 1 };
+        Object.assign(cam, keep);
+        animateCam(to, 280);
+        return;
+      }
+      zoomAround(z, { x: vw / 2, y: vh / 2 });
+      const to = { ...cam };
+      Object.assign(cam, keep);
+      animateCam(to, 260);
     }
     function setZoom(dir) {
-      const cur = prefs.zoom || 1;
+      const cur = cam.z;
       const next = dir > 0 ? ZOOMS.find(z => z > cur + 0.01) : [...ZOOMS].reverse().find(z => z < cur - 0.01);
       if (next) zoomTo(next);
       QD.sfx('click');
     }
     function updateZoomUI() {
       zoomLabel.textContent = zoomText();
-      zoomCtl.classList.toggle('zoomed', (prefs.zoom || 1) !== 1);
+      zoomCtl.classList.toggle('zoomed', Math.abs(cam.z - 1) > 0.01);
       layoutBtn.innerHTML = ic(single ? 'spread' : 'single');
       layoutBtn.title = single ? 'Show two pages' : 'Show one page';
       layoutBtn.setAttribute('aria-label', layoutBtn.title);
@@ -622,92 +708,158 @@
     function cancelStroke() {
       if (!op) return;
       palette.classList.remove('ghost'); zoomCtl.classList.remove('ghost');
-      if (op.tool === 'eraser') sides.forEach(s => s.ctx.restore());
+      if (op.tool === 'eraser') sides.forEach(x => x.ctx.restore());
       op = null;
       clearCtx(lctx);
       liveC.style.opacity = 1;
       redrawInk();
     }
-    const tdist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-    const tmid = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
-    let taps = null; // multi-finger tap detection: 2 fingers = undo, 3 = redo
-    let pinchRaf = 0;
-    function pinchFrame(q) {
-      pinchRaf = 0;
-      const p = q || pinch;
-      if (!p) return;
-      const z = QD.clamp(p.z0 * p.d / p.d0, 0.45, 4.5), k = z / p.z0;
-      const tx = p.m.x - p.wr.left - k * (p.m0.x - p.wr.left), ty = p.m.y - p.wr.top - k * (p.m0.y - p.wr.top);
-      wrap.style.transform = `translate3d(${tx}px, ${ty}px, 0) scale(${k})`;
-      p.z = z;
+
+    /* fingers: 1 = pan (with momentum), 2 = pinch-zoom + pan, quick 2/3-finger tap = undo/redo */
+    const touches = new Map();
+    let pendingPan = null, taps = null, samples = [];
+    const local = e => { const r = scroller.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    const two = () => { const [a, b] = [...touches.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, m: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }; };
+    function startPan(pid, q) {
+      stopCam();
+      gesture = { type: 'pan', pid, x0: q.x, y0: q.y, cx: cam.x, cy: cam.y };
+      samples = [{ t: performance.now(), x: q.x, y: q.y }];
+      scroller.classList.add('panning');
     }
-    function endPinch(p) {
-      cancelAnimationFrame(pinchRaf); pinchRaf = 0;
-      wrap.classList.remove('pinching'); book.classList.remove('pinching');
-      const changedZoom = Math.abs(p.z - p.z0) > 0.001 || Math.hypot(p.m.x - p.m0.x, p.m.y - p.m0.y) > 1;
-      wrap.style.transform = '';
-      if (changedZoom) {
-        let z = QD.clamp(p.z, 0.5, 4);
-        if (Math.abs(z - 1) < 0.06) z = 1;
-        prefs.zoom = z;
-        layout();
-        const r1 = book.getBoundingClientRect();
-        scroller.scrollLeft += r1.left - (p.m.x - p.bp.x * scale);
-        scroller.scrollTop += r1.top - (p.m.y - p.bp.y * scale);
-        savePrefs();
+    function startPinch() {
+      stopCam();
+      if (op && op.touch) cancelStroke();
+      if (lasso) { lasso = null; lassoSvg.classList.remove('on'); lassoPath.setAttribute('d', ''); }
+      pendingPan = null;
+      const t2 = two();
+      gesture = pinch = { type: 'pinch', d0: t2.d, z0: cam.z, x0: cam.x, y0: cam.y, m0: t2.m, m: t2.m };
+      book.classList.add('pinching');
+      scroller.classList.add('panning');
+    }
+    function pinchMove() {
+      const g = gesture, t2 = two();
+      const z = rubberZ(g.z0 * t2.d / g.d0);
+      const s0 = fit * g.z0, s1 = fit * z;
+      cam.z = z;
+      cam.x = t2.m.x - (g.m0.x - g.x0) * s1 / s0;
+      cam.y = t2.m.y - (g.m0.y - g.y0) * s1 / s0;
+      g.m = t2.m;
+      if (taps && (Math.abs(t2.d - g.d0) > 10 || Math.hypot(t2.m.x - g.m0.x, t2.m.y - g.m0.y) > 10)) taps.moved = true;
+      applySoon();
+    }
+    function fling(vx, vy) {
+      let last = performance.now();
+      const step = now => {
+        const dt = Math.min(34, now - last); last = now;
+        cam.x += vx * dt; cam.y += vy * dt;
+        const b = bounds(cam.z);
+        const out = cam.x < b.x0 - 1 || cam.x > b.x1 + 1 || cam.y < b.y0 - 1 || cam.y > b.y1 + 1;
+        const f = Math.pow(out ? 0.86 : 0.9962, dt);
+        vx *= f; vy *= f;
+        applyCam();
+        if (Math.hypot(vx, vy) > 0.02) camAnim = requestAnimationFrame(step);
+        else { camAnim = 0; settle(); }
+      };
+      camAnim = requestAnimationFrame(step);
+    }
+    function endPan() {
+      scroller.classList.remove('panning');
+      const now = performance.now();
+      const recent = samples.filter(x => now - x.t < 90);
+      gesture = null;
+      if (recent.length > 1) {
+        const a = recent[0], b = recent[recent.length - 1], dt = Math.max(8, b.t - a.t);
+        const vx = (b.x - a.x) / dt, vy = (b.y - a.y) / dt;
+        if (Math.hypot(vx, vy) > 0.15) { fling(QD.clamp(vx, -4, 4), QD.clamp(vy, -4, 4)); return; }
       }
+      settle();
     }
-    listen(scroller, 'touchstart', e => {
-      const ts = Array.from(e.touches);
-      if (ts.some(t => t.touchType === 'stylus') || flipping) return;
-      if (ts.length >= 2) {
+    // capture phase: see every finger before anything on the page reacts to it
+    listen(scroller, 'pointerdown', e => {
+      if (e.pointerType !== 'touch' || flipping) return;
+      touches.set(e.pointerId, local(e));
+      if (!taps || touches.size === 1) taps = { t0: performance.now(), n: touches.size, moved: false };
+      else taps.n = Math.max(taps.n, touches.size);
+      if (touches.size === 2) { e.preventDefault(); e.stopPropagation(); scroller.classList.remove('panning'); startPinch(); }
+      else if (touches.size > 2) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+    // bubble phase: a finger that nothing on the page claimed becomes a pan (after a small slop, so taps still work)
+    listen(scroller, 'pointerdown', e => {
+      if (gesture || e.defaultPrevented || flipping) return;
+      const mousePan = e.pointerType === 'mouse' && (e.button === 1 || (e.button === 0 && !e.target.closest('.book')));
+      if (e.pointerType !== 'touch' && !mousePan) return;
+      stopCam();
+      pendingPan = { pid: e.pointerId, q: local(e), mouse: e.pointerType === 'mouse' };
+      if (mousePan) { e.preventDefault(); try { scroller.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ } }
+    });
+    listen(scroller, 'pointermove', e => {
+      const isTouch = touches.has(e.pointerId);
+      if (!isTouch && !(pendingPan && pendingPan.pid === e.pointerId) && !(gesture && gesture.pid === e.pointerId)) return;
+      const q = local(e);
+      if (isTouch) touches.set(e.pointerId, q);
+      if (gesture && gesture.type === 'pinch') { if (touches.size >= 2) { e.preventDefault(); pinchMove(); } return; }
+      if (pendingPan && pendingPan.pid === e.pointerId && !gesture) {
+        if (Math.hypot(q.x - pendingPan.q.x, q.y - pendingPan.q.y) < 7) return;
+        if (taps) taps.moved = true;
+        startPan(e.pointerId, pendingPan.q);
+        pendingPan = null;
+        if (document.activeElement && spread.contains(document.activeElement) && !isTouch) document.activeElement.blur();
+      }
+      if (gesture && gesture.type === 'pan' && gesture.pid === e.pointerId) {
         e.preventDefault();
-        if (op && op.touch) cancelStroke();
-        if (lasso) { lasso = null; lassoSvg.classList.remove('on'); lassoPath.setAttribute('d', ''); }
-        taps = taps && performance.now() - taps.t0 < 250 ? { ...taps, n: Math.max(taps.n, ts.length) } : { t0: performance.now(), n: ts.length, moved: false };
-        if (ts.length === 2 && !pinch) {
-          const m = tmid(ts[0], ts[1]), br = book.getBoundingClientRect(), d = tdist(ts[0], ts[1]);
-          pinch = { d0: d, d, z0: prefs.zoom || 1, z: prefs.zoom || 1, m0: m, m, wr: wrap.getBoundingClientRect(), bp: { x: (m.x - br.left) / scale, y: (m.y - br.top) / scale } };
-          wrap.classList.add('pinching'); book.classList.add('pinching');
+        const b = bounds(cam.z);
+        cam.x = rubber(gesture.cx + q.x - gesture.x0, b.x0, b.x1);
+        cam.y = rubber(gesture.cy + q.y - gesture.y0, b.y0, b.y1);
+        samples.push({ t: performance.now(), x: q.x, y: q.y });
+        if (samples.length > 12) samples.shift();
+        applySoon();
+      }
+    }, true);
+    const fingerUp = e => {
+      const wasTouch = touches.delete(e.pointerId);
+      if (pendingPan && pendingPan.pid === e.pointerId) pendingPan = null;
+      if (gesture && gesture.type === 'pinch' && touches.size < 2) {
+        applySoon.flush();
+        const g = gesture;
+        gesture = pinch = null;
+        book.classList.remove('pinching');
+        if (touches.size === 1) { // keep going with the remaining finger as a pan
+          const [[pid, q]] = [...touches.entries()];
+          startPan(pid, q);
+        } else { scroller.classList.remove('panning'); settle(g.m); }
+      } else if (gesture && gesture.type === 'pan' && gesture.pid === e.pointerId) {
+        applySoon.flush();
+        endPan();
+      }
+      if (wasTouch && touches.size === 0 && taps) {
+        if (!taps.moved && performance.now() - taps.t0 < 320 && e.type === 'pointerup') {
+          if (taps.n === 2) { if (ops.length) { undo(); QD.toast('Undo', { icon: 'undo', timeout: 900 }); } }
+          else if (taps.n >= 3) { if (redo.length) { redoOp(); QD.toast('Redo', { icon: 'redo', timeout: 900 }); } }
         }
+        taps = null;
       }
-    }, { passive: false });
-    listen(scroller, 'touchmove', e => {
-      if (!pinch || e.touches.length < 2) return;
-      e.preventDefault();
-      const [a, b] = e.touches;
-      pinch.m = tmid(a, b); pinch.d = tdist(a, b);
-      if (taps && (Math.abs(pinch.d - pinch.d0) > 10 || Math.hypot(pinch.m.x - pinch.m0.x, pinch.m.y - pinch.m0.y) > 10)) taps.moved = true;
-      if (!pinchRaf) pinchRaf = requestAnimationFrame(pinchFrame);
-    }, { passive: false });
-    const touchEnd = e => {
-      if (e.touches.length >= 2) return;
-      if (taps && !taps.moved && performance.now() - taps.t0 < 320 && e.type === 'touchend' && e.touches.length === 0) {
-        if (taps.n === 2) { if (ops.length) { undo(); QD.toast('Undo', { icon: 'undo', timeout: 900 }); } }
-        else if (taps.n >= 3) { if (redo.length) { redoOp(); QD.toast('Redo', { icon: 'redo', timeout: 900 }); } }
-      }
-      if (e.touches.length === 0) taps = null;
-      if (pinch) { if (pinchRaf) { cancelAnimationFrame(pinchRaf); pinchFrame(); } const p = pinch; pinch = null; endPinch(p); }
     };
-    listen(scroller, 'touchend', touchEnd);
-    listen(scroller, 'touchcancel', touchEnd);
-    // trackpad pinch / Ctrl+wheel: same GPU path as fingers, settle when the wheel goes quiet
-    let wheelP = null, wheelEnd = 0, wheelRaf = 0;
+    listen(scroller, 'pointerup', fingerUp, true);
+    listen(scroller, 'pointercancel', fingerUp, true);
+    // wheel / trackpad: scroll pans, Ctrl+wheel or a trackpad pinch zooms around the cursor
     listen(scroller, 'wheel', e => {
-      if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      if (!wheelP) {
-        const br = book.getBoundingClientRect(), m = { x: e.clientX, y: e.clientY };
-        wheelP = { d0: 1, d: 1, z0: prefs.zoom || 1, z: prefs.zoom || 1, m0: m, m, wr: wrap.getBoundingClientRect(), bp: { x: (m.x - br.left) / scale, y: (m.y - br.top) / scale } };
-        wrap.classList.add('pinching'); book.classList.add('pinching');
+      stopCam();
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? scroller.clientHeight : 1;
+      if (e.ctrlKey || e.metaKey) {
+        zoomAround(QD.clamp(cam.z * Math.exp(-e.deltaY * unit * 0.01), MINZ, MAXZ), local(e));
+      } else {
+        const b = bounds(cam.z);
+        const dx = (e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX) * unit, dy = (e.shiftKey && !e.deltaX ? 0 : e.deltaY) * unit;
+        cam.x = QD.clamp(cam.x - dx, b.x0, b.x1);
+        cam.y = QD.clamp(cam.y - dy, b.y0, b.y1);
       }
-      wheelP.d = QD.clamp(wheelP.d * Math.exp(-e.deltaY * 0.01), 0.45 / wheelP.z0, 4.5 / wheelP.z0);
-      if (!wheelRaf) wheelRaf = requestAnimationFrame(() => { wheelRaf = 0; if (wheelP) pinchFrame(wheelP); });
-      clearTimeout(wheelEnd);
-      wheelEnd = setTimeout(() => { const q = wheelP; wheelP = null; if (!q) return; cancelAnimationFrame(wheelRaf); wheelRaf = 0; pinchFrame(q); endPinch(q); }, 150);
+      applySoon();
+      settleRaster();
     }, { passive: false });
     // Safari: never zoom the whole app with a pinch
     listen(document, 'gesturestart', e => e.preventDefault());
+    listen(document, 'gesturechange', e => e.preventDefault());
 
     /* ===== ink (two canvases, strokes in spread coordinates) ===== */
     // the live (in-progress stroke) canvas covers what's visible: both pages, or just one
@@ -1928,7 +2080,8 @@
       requestAnimationFrame(() => {
         const it = itemById(params.item), el = elFor(params.item);
         if (!it || !el) return;
-        scroller.scrollTo({ top: Math.max(0, wrap.offsetTop + (it.y + COVER) * scale - scroller.clientHeight / 3), behavior: 'smooth' });
+        const b = bounds(cam.z);
+        animateCam({ x: cam.x, y: QD.clamp(scroller.clientHeight / 3 - (it.y + COVER) * fit * cam.z, b.y0, b.y1), z: cam.z }, 380);
         el.classList.add('flash');
         setTimeout(() => el.classList.remove('flash'), 2400);
         if (tool !== 'type') setTool('type', true);
@@ -1938,6 +2091,7 @@
 
     /* ===== teardown ===== */
     return () => {
+      stopCam();
       commitSel();
       syncSoon.cancel();
       if (S.pages.has(page.id) || !page.draft) syncBody();

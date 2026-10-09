@@ -896,7 +896,11 @@ div.p-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .save-dot[data-state="saving"] .ic { animation: blink .6s steps(2) infinite; }
 
 .j-stage { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.j-scroll { touch-action: pan-x pan-y; scrollbar-gutter: stable both-edges; }
+/* the journal stage is a camera, not a scroll box: we pan / zoom it ourselves */
+.j-scroll { display: block !important; overflow: hidden !important; padding: 0 !important; touch-action: none; overscroll-behavior: none; }
+.j-scroll.panning { cursor: grabbing; -webkit-user-select: none; user-select: none; }
+.j-scroll .book-wrap { position: absolute; left: 0; top: 0; margin: 0; transform-origin: 0 0; will-change: transform; }
+.j-scroll .more-paper { position: absolute; left: 50%; translate: -50% 0; margin: 0; }
 .book.pinching { will-change: transform; }
 .book.pinching .corner::before { opacity: 0; }
 
