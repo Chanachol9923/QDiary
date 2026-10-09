@@ -33,6 +33,18 @@ window.QD = window.QD || {};
   };
 
   QD.$ = (s, r = document) => r.querySelector(s);
+  // give list children an index so CSS can cascade their entrance animation
+  QD.stagger = (root, sel, max = 16) => { Array.from(root.querySelectorAll(sel)).forEach((el, i) => el.style.setProperty('--i', Math.min(i, max))); };
+  // restart a one-shot CSS animation class
+  QD.bump = (el, cls = 'hop') => { if (!el) return; el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); el.addEventListener('animationend', () => el.classList.remove(cls), { once: true }); };
+  // iPad (incl. iPadOS "desktop" Safari) and other large touch tablets → pencil-first behaviour
+  QD.isTablet = (() => {
+    try {
+      const ua = navigator.userAgent;
+      return /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ||
+        (matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) >= 700);
+    } catch (e) { return false; }
+  })();
   QD.$$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   QD.esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   QD.uid = (p = '') => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);

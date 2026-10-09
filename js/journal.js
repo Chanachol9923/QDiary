@@ -16,6 +16,7 @@
     { id: 'highlight', icon: 'highlighter', label: 'Highlighter', key: 'h', size: 22, min: 10, max: 48, alpha: 0.38 },
     { id: 'pixel', icon: 'pixel', label: 'Pixel brush', key: 'x', size: 8, min: 4, max: 32, step: 4, alpha: 1 },
     { id: 'eraser', icon: 'eraser', label: 'Eraser', key: 'e', size: 24, min: 6, max: 90 },
+    { id: 'lasso', icon: 'lasso', label: 'Lasso — circle to select & move', key: 'l' },
   ];
   const TOOL = {};
   TOOLS.forEach(t => { TOOL[t.id] = t; });
@@ -29,7 +30,7 @@
   const prefs = (() => {
     let p = {};
     try { p = JSON.parse(localStorage.getItem('qd.tools')) || {}; } catch (e) { /* ignore */ }
-    return Object.assign({ tool: 'type', colors: { pen: 'ink', marker: '#ff5d8f', highlight: '#ffe45c', pixel: 'ink' }, sizes: {}, zoom: 1 }, p);
+    return Object.assign({ tool: QD.isTablet ? 'pen' : 'type', colors: { pen: 'ink', marker: '#ff5d8f', highlight: '#ffe45c', pixel: 'ink' }, sizes: {}, zoom: 1 }, p);
   })();
   const savePrefs = () => { try { localStorage.setItem('qd.tools', JSON.stringify(prefs)); } catch (e) { /* ignore */ } };
   const sizeOf = t => prefs.sizes[t] || TOOL[t].size;
@@ -171,9 +172,8 @@
     const palette = h('div', { class: 'j-palette bx' });
     const scroller = h('div', { class: 'j-scroll' });
     const zoomCtl = h('div', { class: 'j-zoom bx' });
-    const zoomHud = h('div', { class: 'zoom-hud' });
     const dock = h('div', { class: 'j-dock bx' });
-    root.append(bar, h('div', { class: 'j-stage' }, scroller, palette, zoomCtl, zoomHud, dock));
+    root.append(bar, h('div', { class: 'j-stage' }, scroller, palette, zoomCtl, dock));
 
     /* ===== the book ===== */
     const sides = [0, 1].map(i => {
@@ -218,6 +218,7 @@
     }
     const setStatus = st => {
       if (!statusEl) return;
+      if (st === 'saved' && statusEl.dataset.state === 'saving') QD.bump(statusEl, 'pop');
       statusEl.dataset.state = st;
       statusEl.innerHTML = st === 'saving' ? ic('clock') : st === 'saved' ? ic('check') : ic('pencil');
       statusEl.title = st === 'saving' ? 'Saving…' : st === 'saved' ? 'All changes saved' : 'Blank day — start writing to keep it';
@@ -242,7 +243,7 @@
         legacy = h('button', { class: 'jb-chip', title: 'This day has more than one entry', text: `${i + 1}/${day.length}`, onclick: () => QD.app.go('#/page/' + day[(i + 1) % day.length].id) });
       }
       const nav = h('div', { class: 'jb-group jb-nav' },
-        jb('menu', 'Open menu', () => document.body.classList.add('drawer-open'), 'drawer-btn'),
+        jb('menu', 'Show sidebar', () => QD.app.toggleSidebar(), 'drawer-btn'),
         jb('chevL', 'Turn back (Alt+←)', () => flipTo('prev')), dateBtn, jb('chevR', 'Turn forward (Alt+→)', () => flipTo('next')), legacy);
       const tools = h('div', { class: 'jb-group jb-tools' });
       for (const t of TOOLS) {
@@ -264,7 +265,7 @@
     function updateToolColors() {
       QD.$$('.jb.tool', bar).forEach(b => {
         const t = b.dataset.tool;
-        b.style.setProperty('--tc', t === 'type' || t === 'eraser' ? 'transparent' : inkColor(t, single ? side * W : 0));
+        b.style.setProperty('--tc', t === 'type' || t === 'eraser' || t === 'lasso' ? 'transparent' : inkColor(t, single ? side * W : 0));
       });
     }
     function insertMenu(anchor) {
@@ -516,7 +517,7 @@
       root.style.setProperty('--nb-scale', scale);
       placeCorners();
       updateZoomUI();
-      if (was !== single) deselect();
+      if (was !== single) { deselect(); commitSel(); }
     }
     function placeCorners() {
       const nx = single ? side : 1, px = single ? side : 0;
@@ -552,7 +553,7 @@
     const sideAt = x => (single ? side : x < W ? 0 : 1);
 
     /* ===== zoom: buttons, pinch (two fingers), trackpad pinch / Ctrl+wheel ===== */
-    let pinch = null, hudTimer = 0;
+    let pinch = null;
     const zoomLabel = h('button', { class: 'zoom-label', title: 'Fit page to screen', onclick: () => zoomTo(1) });
     const layoutBtn = h('button', { class: 'jb', onclick: () => toggleLayout() });
     zoomCtl.append(
@@ -561,12 +562,8 @@
       h('button', { class: 'jb', title: 'Zoom in', 'aria-label': 'Zoom in', html: ic('plus'), onclick: () => setZoom(1) }),
       h('span', { class: 'jb-sep' }), layoutBtn);
     const zoomText = () => ((prefs.zoom || 1) === 1 ? 'Fit' : Math.round(prefs.zoom * 100) + '%');
-    function showHud() {
-      zoomHud.textContent = zoomText();
-      zoomHud.classList.add('show');
-      clearTimeout(hudTimer);
-      hudTimer = setTimeout(() => zoomHud.classList.remove('show'), 650);
-    }
+    // no big overlay while zooming — just keep the small corner chip in sync
+    function showHud() { updateZoomUI(); }
     // zoom so the point under (cx, cy) stays put
     function zoomAt(z, cx, cy) {
       z = QD.clamp(z, 0.5, 4);
@@ -613,29 +610,54 @@
     const tdist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
     const tmid = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
     let taps = null; // multi-finger tap detection: 2 fingers = undo, 3 = redo
+    let pinchRaf = 0;
+    function pinchFrame() {
+      pinchRaf = 0;
+      const p = pinch;
+      if (!p) return;
+      const z = QD.clamp(p.z0 * p.d / p.d0, 0.45, 4.5), k = z / p.z0;
+      const tx = p.m.x - p.wr.left - k * (p.m0.x - p.wr.left), ty = p.m.y - p.wr.top - k * (p.m0.y - p.wr.top);
+      wrap.style.transform = `translate3d(${tx}px, ${ty}px, 0) scale(${k})`;
+      p.z = z;
+    }
+    function endPinch(p) {
+      cancelAnimationFrame(pinchRaf); pinchRaf = 0;
+      wrap.classList.remove('pinching'); book.classList.remove('pinching');
+      const changedZoom = Math.abs(p.z - p.z0) > 0.001 || Math.hypot(p.m.x - p.m0.x, p.m.y - p.m0.y) > 1;
+      wrap.style.transform = '';
+      if (changedZoom) {
+        let z = QD.clamp(p.z, 0.5, 4);
+        if (Math.abs(z - 1) < 0.06) z = 1;
+        prefs.zoom = z;
+        layout();
+        const r1 = book.getBoundingClientRect();
+        scroller.scrollLeft += r1.left - (p.m.x - p.bp.x * scale);
+        scroller.scrollTop += r1.top - (p.m.y - p.bp.y * scale);
+        savePrefs();
+      }
+    }
     listen(scroller, 'touchstart', e => {
       const ts = Array.from(e.touches);
       if (ts.some(t => t.touchType === 'stylus') || flipping) return;
       if (ts.length >= 2) {
         e.preventDefault();
         if (op && op.touch) cancelStroke();
+        if (lasso) { lasso = null; clearCtx(lctx); }
         taps = taps && performance.now() - taps.t0 < 250 ? { ...taps, n: Math.max(taps.n, ts.length) } : { t0: performance.now(), n: ts.length, moved: false };
-        if (ts.length === 2) {
-          const m = tmid(ts[0], ts[1]);
-          pinch = { d0: tdist(ts[0], ts[1]), z0: prefs.zoom || 1, last: m };
-          book.classList.add('pinching');
+        if (ts.length === 2 && !pinch) {
+          const m = tmid(ts[0], ts[1]), br = book.getBoundingClientRect(), d = tdist(ts[0], ts[1]);
+          pinch = { d0: d, d, z0: prefs.zoom || 1, z: prefs.zoom || 1, m0: m, m, wr: wrap.getBoundingClientRect(), bp: { x: (m.x - br.left) / scale, y: (m.y - br.top) / scale } };
+          wrap.classList.add('pinching'); book.classList.add('pinching');
         }
       }
     }, { passive: false });
     listen(scroller, 'touchmove', e => {
       if (!pinch || e.touches.length < 2) return;
       e.preventDefault();
-      const [a, b] = e.touches, m = tmid(a, b), d = tdist(a, b);
-      if (taps && (Math.abs(d - pinch.d0) > 10 || Math.hypot(m.x - pinch.last.x, m.y - pinch.last.y) > 10)) taps.moved = true;
-      scroller.scrollLeft -= m.x - pinch.last.x;
-      scroller.scrollTop -= m.y - pinch.last.y;
-      pinch.last = m;
-      zoomAt(pinch.z0 * d / pinch.d0, m.x, m.y);
+      const [a, b] = e.touches;
+      pinch.m = tmid(a, b); pinch.d = tdist(a, b);
+      if (taps && (Math.abs(pinch.d - pinch.d0) > 10 || Math.hypot(pinch.m.x - pinch.m0.x, pinch.m.y - pinch.m0.y) > 10)) taps.moved = true;
+      if (!pinchRaf) pinchRaf = requestAnimationFrame(pinchFrame);
     }, { passive: false });
     const touchEnd = e => {
       if (e.touches.length >= 2) return;
@@ -644,15 +666,16 @@
         else if (taps.n >= 3) { if (redo.length) { redoOp(); QD.toast('Redo', { icon: 'redo', timeout: 900 }); } }
       }
       if (e.touches.length === 0) taps = null;
-      if (pinch) { pinch = null; book.classList.remove('pinching'); savePrefs(); }
+      if (pinch) { if (pinchRaf) { cancelAnimationFrame(pinchRaf); pinchFrame(); } const p = pinch; pinch = null; endPinch(p); }
     };
     listen(scroller, 'touchend', touchEnd);
     listen(scroller, 'touchcancel', touchEnd);
-    let wheelSave = 0;
+    let wheelSave = 0, wheelRaf = 0, wheelZ = null;
     listen(scroller, 'wheel', e => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      zoomAt((prefs.zoom || 1) * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+      wheelZ = { z: (wheelZ ? wheelZ.z : prefs.zoom || 1) * Math.exp(-e.deltaY * 0.01), x: e.clientX, y: e.clientY };
+      if (!wheelRaf) wheelRaf = requestAnimationFrame(() => { wheelRaf = 0; const w = wheelZ; wheelZ = null; if (w) zoomAt(w.z, w.x, w.y); });
       clearTimeout(wheelSave);
       wheelSave = setTimeout(savePrefs, 300);
     }, { passive: false });
@@ -722,6 +745,7 @@
       for (let i = from; i < o.cells.length; i++) c.fillRect(o.cells[i][0] * o.size, o.cells[i][1] * o.size, o.size, o.size);
     }
     function replay(o) {
+      if (o.tool === 'move') { if (o.ink) applyMove(o); return; }
       if (o.tool === 'clear') { (o.sides || [0, 1]).forEach(i => clearCtx(sides[i].ctx)); return; }
       if (o.tool === 'eraser' || o.tool === 'delete') {
         sides.forEach(s => { s.ctx.save(); s.ctx.globalCompositeOperation = 'destination-out'; strokeSegs(s.ctx, o, 0); strokeEnd(s.ctx, o); s.ctx.restore(); });
@@ -745,6 +769,7 @@
     }
     function opSides(o) {
       if (o.tool === 'clear') return o.sides || [0, 1];
+      if (o.tool === 'move') return [0, 1];
       const xs = o.tool === 'pixel' ? o.cells.flatMap(c => [c[0] * o.size, (c[0] + 1) * o.size]) : o.pts.map(p => p.x);
       const lo = Math.min(...xs) - o.size, hi = Math.max(...xs) + o.size;
       const out = new Set([0, 1].filter(i => hi > i * W && lo < (i + 1) * W));
@@ -773,7 +798,7 @@
         if (dir && sg !== dir) rev++;
         dir = sg; acc = 0;
       }
-      return rev >= 4;
+      return rev >= 4 || (rev >= 3 && L / D >= 4);
     }
     function scratchTargets(o) {
       const dead = deadIds();
@@ -842,13 +867,13 @@
     }
 
     /* Pencil / finger policy (iPad): once an Apple Pencil is seen, fingers scroll & arrange and only the pencil draws. */
-    const fingerDraws = () => S.settings.fingerDraw === 'on' || (S.settings.fingerDraw !== 'off' && !penSeen);
+    const fingerDraws = () => S.settings.fingerDraw === 'on' || (S.settings.fingerDraw !== 'off' && !penSeen && !QD.isTablet);
     function markPen() {
       if (penSeen) return;
       penSeen = true;
       try { localStorage.setItem('qd.pen', '1'); } catch (e) { /* ignore */ }
       book.classList.toggle('touch-pan', !fingerDraws());
-      if (S.settings.fingerDraw !== 'on') QD.toast('Apple Pencil detected — the pencil draws, fingers scroll', { icon: 'pen' });
+      if (S.settings.fingerDraw !== 'on' && !QD.isTablet) QD.toast('Apple Pencil detected — the pencil draws, fingers scroll', { icon: 'pen' });
     }
     book.classList.toggle('touch-pan', !fingerDraws());
 
@@ -901,6 +926,8 @@
           redrawInk();
           inkChanged(del);
           QD.sfx('del');
+          poof(o.pts);
+          QD.toast('Scribbled out', { icon: 'eraser', action: 'Undo', timeout: 2600, onAction: () => { if (ops[ops.length - 1] === del) undo(); } });
           return;
         }
       }
@@ -918,24 +945,28 @@
 
     // one capture-phase handler decides: draw, or let the page/items/scrolling have the pointer
     listen(spread, 'pointerdown', e => {
-      if (flipping || op || pinch || e.target.closest('.corner')) return;
+      if (flipping || op || pinch || lasso || e.target.closest('.corner')) return;
       if (e.pointerType === 'pen') markPen();
-      if (e.target.closest('.i-bar, .h-rot, .h-size')) return;
+      if (e.target.closest('.i-bar, .h-rot, .h-size, .lasso-bar')) return;
       const pencilDraws = tool === 'type' && e.pointerType === 'pen' && S.settings.pencil !== 'scribble';
-      if (tool === 'type' && !pencilDraws) return;
+      if (tool === 'type' && !pencilDraws) { if (sel && !e.target.closest('.in-lasso')) commitSel(); return; }
       if (e.pointerType === 'mouse' && e.button !== 0) return;
-      if (e.pointerType === 'touch' && !fingerDraws()) return; // finger pans; pencil draws
+      const fingerOnSel = tool === 'lasso' && sel && inSel(pt(e));
+      if (e.pointerType === 'touch' && !fingerDraws() && !fingerOnSel) return; // finger pans; pencil draws
       e.preventDefault();
       e.stopPropagation();
+      if (tool === 'lasso') { lassoDown(e); return; }
+      commitSel();
       deselect();
       if (document.activeElement && spread.contains(document.activeElement)) document.activeElement.blur();
       beginStroke(e, pencilDraws ? (S.settings.pencilTool || 'pen') : tool);
     }, true);
     listen(spread, 'pointermove', e => {
+      if (lassoMove(e)) return;
       if (op && e.pointerId === op.pid) { moveStroke(e); moveCursor(e); return; }
       if (tool !== 'type' && (e.pointerType !== 'touch')) moveCursor(e);
     });
-    const finish = e => { if (op && e.pointerId === op.pid) endStroke(); };
+    const finish = e => { if (lassoUp(e)) return; if (op && e.pointerId === op.pid) endStroke(); };
     listen(spread, 'pointerup', finish);
     listen(spread, 'pointercancel', finish);
     listen(spread, 'pointerleave', () => { cursor.style.display = 'none'; });
@@ -949,7 +980,7 @@
     listen(spread, 'touchmove', stylusGuard, { passive: false });
 
     function moveCursor(e) {
-      if (tool === 'type' || flipping) { cursor.style.display = 'none'; return; }
+      if (tool === 'type' || tool === 'lasso' || flipping) { cursor.style.display = 'none'; return; }
       const p = pt(e), s = sizeOf(tool);
       cursor.style.display = 'block';
       cursor.style.width = cursor.style.height = s + 'px';
@@ -958,14 +989,254 @@
     }
 
     function undo() {
+      commitSel();
       if (!ops.length) return;
       const o = ops.pop(); redo.push(o);
+      if (o.tool === 'move' && o.items && o.items.length) shiftItems(o.items, -1);
       redrawInk(); inkChanged(o); QD.sfx('click');
     }
     function redoOp() {
+      commitSel();
       if (!redo.length) return;
       const o = redo.pop(); ops.push(o);
+      if (o.tool === 'move' && o.items && o.items.length) shiftItems(o.items, 1);
       redrawInk(); inkChanged(o); QD.sfx('click');
+    }
+
+    /* ===== lasso: circle ink and items to select, then drag / delete / duplicate ===== */
+    let lasso = null, sel = null, tmpA = null, tmpB = null;
+    const tmpCanvas = c => { c = c || document.createElement('canvas'); c.width = 2 * W * DPR; c.height = page.height * DPR; return c; };
+    function polyPath(c, poly, ox = 0) {
+      c.beginPath();
+      poly.forEach((q, i) => (i ? c.lineTo((q.x - ox) * DPR, q.y * DPR) : c.moveTo((q.x - ox) * DPR, q.y * DPR)));
+      c.closePath();
+    }
+    function cutPiece(poly) {
+      tmpA = tmpCanvas(tmpA);
+      const a = tmpA.getContext('2d');
+      sides.forEach((sd, i) => a.drawImage(sd.ink, i * W * DPR, 0));
+      tmpB = tmpCanvas(tmpB);
+      const b = tmpB.getContext('2d');
+      b.save(); polyPath(b, poly); b.clip(); b.drawImage(tmpA, 0, 0); b.restore();
+      return tmpB;
+    }
+    function erasePoly(poly) {
+      sides.forEach((sd, i) => {
+        sd.ctx.save(); sd.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        sd.ctx.globalCompositeOperation = 'destination-out';
+        polyPath(sd.ctx, poly, i * W); sd.ctx.fill();
+        sd.ctx.restore();
+      });
+    }
+    function pastePiece(piece, dx, dy) {
+      sides.forEach((sd, i) => { sd.ctx.save(); sd.ctx.setTransform(1, 0, 0, 1, 0, 0); sd.ctx.drawImage(piece, (dx - i * W) * DPR, dy * DPR); sd.ctx.restore(); });
+    }
+    function applyMove(o) {
+      const piece = cutPiece(o.poly);
+      if (!o.copy) erasePoly(o.poly);
+      if (!o.del) pastePiece(piece, o.dx, o.dy);
+    }
+    const inPoly = (q, poly) => {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const a = poly[i], b = poly[j];
+        if ((a.y > q.y) !== (b.y > q.y) && q.x < (b.x - a.x) * (q.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+      }
+      return inside;
+    };
+    const inSel = q => sel && q.x > sel.box.x0 + sel.dx - 12 && q.x < sel.box.x1 + sel.dx + 12 && q.y > sel.box.y0 + sel.dy - 12 && q.y < sel.box.y1 + sel.dy + 12;
+    function drawLasso() {
+      clearCtx(lctx);
+      const pts = lasso.pts;
+      lctx.save();
+      lctx.setLineDash([7, 6]);
+      lctx.lineWidth = 2.2 / Math.max(scale, 0.5);
+      lctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#ff6f9c';
+      lctx.fillStyle = 'rgba(120, 110, 255, .07)';
+      lctx.beginPath();
+      pts.forEach((q, i) => (i ? lctx.lineTo(q.x, q.y) : lctx.moveTo(q.x, q.y)));
+      if (pts.length > 2) lctx.closePath();
+      lctx.fill(); lctx.stroke();
+      lctx.restore();
+    }
+    function lassoDown(e) {
+      capture(e.pointerId);
+      const q = pt(e);
+      if (sel && inSel(q)) { sel.drag = { pid: e.pointerId, x: q.x, y: q.y, dx0: sel.dx, dy0: sel.dy }; sel.outline.classList.add('dragging'); return; }
+      commitSel();
+      deselect();
+      lasso = { pid: e.pointerId, pts: [q] };
+      liveC.style.opacity = 1;
+    }
+    function lassoMove(e) {
+      if (sel && sel.drag && e.pointerId === sel.drag.pid) {
+        const q = pt(e);
+        sel.dx = sel.drag.dx0 + q.x - sel.drag.x;
+        sel.dy = sel.drag.dy0 + q.y - sel.drag.y;
+        positionSel();
+        return true;
+      }
+      if (lasso && e.pointerId === lasso.pid) {
+        const evs = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
+        for (const ev of evs.length ? evs : [e]) {
+          const q = pt(ev), l = lasso.pts[lasso.pts.length - 1];
+          if (Math.abs(q.x - l.x) + Math.abs(q.y - l.y) > 1.5) lasso.pts.push(q);
+        }
+        drawLasso();
+        return true;
+      }
+      return false;
+    }
+    function lassoUp(e) {
+      if (sel && sel.drag && e.pointerId === sel.drag.pid) { sel.drag = null; sel.outline.classList.remove('dragging'); return true; }
+      if (lasso && e.pointerId === lasso.pid) {
+        const pts = lasso.pts;
+        lasso = null;
+        clearCtx(lctx);
+        if (pts.length > 6) makeSel(pts);
+        return true;
+      }
+      return false;
+    }
+    function makeSel(poly) {
+      let bx0 = Math.max(single ? side * W : 0, Math.min(...poly.map(q => q.x))), bx1 = Math.min(single ? side * W + W : 2 * W, Math.max(...poly.map(q => q.x)));
+      const by0 = Math.max(0, Math.min(...poly.map(q => q.y))), by1 = Math.min(page.height, Math.max(...poly.map(q => q.y)));
+      if (bx1 - bx0 < 4 || by1 - by0 < 4) return;
+      const piece = cutPiece(poly);
+      const X0 = Math.floor(bx0 * DPR), Y0 = Math.floor(by0 * DPR), Wd = Math.max(1, Math.ceil((bx1 - bx0) * DPR)), Hd = Math.max(1, Math.ceil((by1 - by0) * DPR));
+      const data = piece.getContext('2d').getImageData(X0, Y0, Wd, Hd).data;
+      let mnx = Infinity, mny = Infinity, mxx = -1, mxy = -1;
+      for (let y = 0; y < Hd; y++) for (let x = 0; x < Wd; x++) {
+        if (data[(y * Wd + x) * 4 + 3] > 10) { if (x < mnx) mnx = x; if (x > mxx) mxx = x; if (y < mny) mny = y; if (y > mxy) mxy = y; }
+      }
+      const items = page.items.filter(it => {
+        if (single && (it.side || 0) !== side) return false;
+        const el = elFor(it.id);
+        const hh = el ? el.offsetHeight : it.h || it.w;
+        return inPoly({ x: (it.side || 0) * W + it.x + it.w / 2, y: it.y + hh / 2 }, poly);
+      });
+      const hasInk = mxx >= 0;
+      if (!hasInk && !items.length) { QD.toast('Nothing there — circle some ink, stickers or photos', { icon: 'help', timeout: 1800 }); return; }
+      let box = null, float = null;
+      if (hasInk) {
+        const ix = (X0 + mnx) / DPR - 2, iy = (Y0 + mny) / DPR - 2, iw = (mxx - mnx + 1) / DPR + 4, ih = (mxy - mny + 1) / DPR + 4;
+        float = h('canvas', { class: 'lasso-float', style: { left: ix + 'px', top: iy + 'px', width: iw + 'px', height: ih + 'px' } });
+        float.width = Math.ceil(iw * DPR); float.height = Math.ceil(ih * DPR);
+        float.getContext('2d').drawImage(piece, Math.round(ix * DPR), Math.round(iy * DPR), float.width, float.height, 0, 0, float.width, float.height);
+        spread.append(float);
+        erasePoly(poly); // lift it off the paper while it floats
+        box = { x0: ix, y0: iy, x1: ix + iw, y1: iy + ih };
+      }
+      for (const it of items) {
+        const el = elFor(it.id);
+        if (!el) continue;
+        el.classList.add('in-lasso');
+        const sx = (it.side || 0) * W + it.x;
+        const r = { x0: sx, y0: it.y, x1: sx + el.offsetWidth, y1: it.y + el.offsetHeight };
+        box = box ? { x0: Math.min(box.x0, r.x0), y0: Math.min(box.y0, r.y0), x1: Math.max(box.x1, r.x1), y1: Math.max(box.y1, r.y1) } : r;
+      }
+      const btn = (icon, label, fn, cls = '') => h('button', { class: 'ib ' + cls, title: label, 'aria-label': label, html: ic(icon), onclick: ev => { ev.stopPropagation(); fn(); } });
+      const bar = h('div', { class: 'lasso-bar' + (box.y0 < 70 ? ' below' : '') },
+        btn('copy', 'Duplicate', selDuplicate), btn('trash', 'Delete', selDelete, 'danger-text'), btn('check', 'Done', commitSel));
+      const outline = h('div', { class: 'lasso-box', style: { left: box.x0 - 6 + 'px', top: box.y0 - 6 + 'px', width: box.x1 - box.x0 + 12 + 'px', height: box.y1 - box.y0 + 12 + 'px' } }, bar);
+      spread.append(outline);
+      sel = { poly, dx: 0, dy: 0, float, outline, box, hasInk, items: items.map(it => ({ it, sx: (it.side || 0) * W + it.x, y: it.y })) };
+      QD.sfx('pop');
+    }
+    function positionSel() {
+      const t = `translate(${sel.dx}px, ${sel.dy}px)`;
+      if (sel.float) sel.float.style.transform = t;
+      sel.outline.style.transform = t;
+      for (const x of sel.items) {
+        const it = x.it, el = elFor(it.id);
+        const sx = x.sx + sel.dx;
+        const ns = single ? (it.side || 0) : (sx + it.w / 2 < W ? 0 : 1);
+        if (el && ns !== (it.side || 0)) sides[ns].items.append(el);
+        it.side = ns;
+        it.x = Math.round(sx - ns * W);
+        it.y = Math.round(x.y + sel.dy);
+        if (el) placeEl(el, it);
+      }
+    }
+    function dropSelUi(s) {
+      if (s.float) s.float.remove();
+      s.outline.remove();
+      s.items.forEach(x => { const el = elFor(x.it.id); if (el) el.classList.remove('in-lasso'); });
+    }
+    function commitSel() {
+      if (!sel) return;
+      const s = sel; sel = null;
+      dropSelUi(s);
+      if (Math.abs(s.dx) > 0.5 || Math.abs(s.dy) > 0.5) {
+        const o = { id: ++opSeq, tool: 'move', ink: s.hasInk, poly: s.poly, dx: s.dx, dy: s.dy, items: s.items.map(x => ({ id: x.it.id, dx: s.dx, dy: s.dy })) };
+        ops.push(o); redo = [];
+        redrawInk();
+        inkChanged(o);
+      } else redrawInk(); // put the lifted ink back
+    }
+    function selDelete() {
+      const s = sel;
+      if (!s) return;
+      sel = null;
+      dropSelUi(s);
+      if (s.hasInk) {
+        const o = { id: ++opSeq, tool: 'move', ink: true, del: true, poly: s.poly, dx: 0, dy: 0 };
+        ops.push(o); redo = [];
+        redrawInk(); inkChanged(o);
+      } else redrawInk();
+      if (s.items.length) removeItems(s.items.map(x => x.it.id));
+      else { QD.sfx('del'); poof(s.poly); }
+    }
+    async function selDuplicate() {
+      const s = sel;
+      if (!s) return;
+      const off = 24;
+      commitSel();
+      if (s.hasInk) {
+        const o = { id: ++opSeq, tool: 'move', ink: true, copy: true, poly: s.poly.map(q => ({ x: q.x + s.dx, y: q.y + s.dy })), dx: off, dy: off };
+        ops.push(o); redo = [];
+        redrawInk(); inkChanged(o);
+      }
+      for (const x of s.items) {
+        const c = JSON.parse(JSON.stringify(x.it));
+        c.id = QD.uid('i');
+        c.x += off; c.y += off; c.z = maxZ() + 1; c.createdAt = Date.now();
+        if (c.mediaId && S.media.get(c.mediaId)) {
+          const rec = S.media.get(c.mediaId), id = QD.uid('m');
+          await S.putMedia({ ...rec, id, itemId: c.id, createdAt: Date.now() });
+          c.mediaId = id;
+        }
+        page.items.push(c);
+        const el = buildItem(c, live);
+        el.classList.add('pop-in');
+        sides[c.side || 0].items.append(el);
+      }
+      if (s.items.length) changed();
+      QD.sfx('pop');
+      QD.toast('Duplicated', { icon: 'copy', timeout: 1400 });
+    }
+    function shiftItems(list, sign) {
+      for (const m of list) {
+        const it = itemById(m.id);
+        if (!it) continue;
+        const el = elFor(it.id);
+        const sx = (it.side || 0) * W + it.x + sign * m.dx;
+        const ns = single ? (it.side || 0) : (sx + it.w / 2 < W ? 0 : 1);
+        if (el && ns !== (it.side || 0)) sides[ns].items.append(el);
+        it.side = ns;
+        it.x = Math.round(sx - ns * W);
+        it.y = Math.round(it.y + sign * m.dy);
+        if (el) placeEl(el, it);
+      }
+      changed();
+    }
+    // a little pixel "poof" where something was erased
+    function poof(pts) {
+      const xs = pts.map(q => q.x), ys = pts.map(q => q.y);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+      const el = h('div', { class: 'poof', style: { left: cx + 'px', top: cy + 'px' } }, Array.from({ length: 8 }, (_, i) => h('i', { style: { '--a': i * 45 + 'deg' } })));
+      spread.append(el);
+      setTimeout(() => el.remove(), 700);
     }
     function updateUndo() {
       if (undoBtn) undoBtn.disabled = !ops.length;
@@ -1075,7 +1346,7 @@
         spread.removeEventListener('pointercancel', up);
         el.classList.remove('dragging');
         el.classList.toggle('bar-below', it.y < 90);
-        if (moved) changed();
+        if (moved) { changed(); if (mode === 'move') QD.bump(el, 'settle'); }
       };
       spread.addEventListener('pointermove', move);
       spread.addEventListener('pointerup', up);
@@ -1124,29 +1395,40 @@
       QD.sfx('pop');
       return el;
     }
-    function removeItem(id) {
-      const idx = page.items.findIndex(i => i.id === id);
-      if (idx < 0) return;
-      const [it] = page.items.splice(idx, 1);
-      if (selected === id) selected = null;
-      const el = elFor(id);
-      if (el) el.remove();
+    function removeItem(id) { removeItems([id]); }
+    function removeItems(ids) {
+      const removed = [];
+      for (const id of ids) {
+        const idx = page.items.findIndex(i => i.id === id);
+        if (idx < 0) continue;
+        const [it] = page.items.splice(idx, 1);
+        removed.push({ it, idx });
+        if (selected === id) selected = null;
+        const el = elFor(id);
+        if (el) el.remove();
+      }
+      if (!removed.length) return;
       changed();
       QD.sfx('del');
       const names = { photo: 'Photo', voice: 'Voice note', note: 'Note', sticker: 'Sticker', tape: 'Tape' };
       let undone = false;
-      QD.toast(`${names[it.type]} removed`, {
+      QD.toast(removed.length === 1 ? `${names[removed[0].it.type]} removed` : `${removed.length} items removed`, {
         icon: 'trash', action: 'Undo',
         onAction: () => {
           undone = true;
-          page.items.splice(Math.min(idx, page.items.length), 0, it);
-          if (!destroyed) { const ne = buildItem(it, live); ne.classList.add('pop-in'); sides[it.side || 0].items.append(ne); }
+          for (const { it, idx } of removed.slice().reverse()) {
+            page.items.splice(Math.min(idx, page.items.length), 0, it);
+            if (!destroyed) { const ne = buildItem(it, live); ne.classList.add('pop-in'); sides[it.side || 0].items.append(ne); }
+          }
           changed();
         },
         onDone: () => {
-          if (undone || !it.mediaId) return;
-          if (QD.player.id === it.mediaId) QD.player.stop();
-          S.deleteMedia(it.mediaId);
+          if (undone) return;
+          for (const { it } of removed) {
+            if (!it.mediaId) continue;
+            if (QD.player.id === it.mediaId) QD.player.stop();
+            S.deleteMedia(it.mediaId);
+          }
         },
       });
     }
@@ -1224,6 +1506,7 @@
       setTimeout(() => el.querySelector('.note-text').focus(), 50);
     }
     function setTool(id, quiet) {
+      if (id !== 'lasso') commitSel();
       tool = id;
       prefs.tool = id;
       if (id !== 'type') prefs.lastDraw = id;
@@ -1231,7 +1514,7 @@
       paletteHidden = false;
       book.dataset.tool = id;
       book.classList.toggle('drawing', id !== 'type');
-      QD.$$('.jb.tool', bar).forEach(b => { const on = b.dataset.tool === id; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
+      QD.$$('.jb.tool', bar).forEach(b => { const on = b.dataset.tool === id; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); if (on && !quiet) QD.bump(b); });
       if (id !== 'type') { deselect(); if (document.activeElement && spread.contains(document.activeElement)) document.activeElement.blur(); textFocused = false; }
       cursor.style.display = 'none';
       cursor.className = 'brush-cursor bc-' + id;
@@ -1277,6 +1560,11 @@
           pb(ic('eraser'), 'Clear formatting', () => fmt('removeFormat')));
       } else {
         show = !paletteHidden;
+        if (tool === 'lasso') {
+          palette.append(h('span', { class: 'pal-hint', html: `${ic('lasso')}<span>Circle ink, stickers or photos — then drag to move</span>` }));
+          palette.classList.toggle('show', !!show && !prefs.focus);
+          return;
+        }
         const t = TOOL[tool];
         if (tool !== 'eraser') {
           const list = tool === 'highlight' ? HL_SWATCHES : PEN_SWATCHES;
@@ -1321,6 +1609,7 @@
     function dayTarget(date, s) { return { p: S.pagesOn(date)[0] || S.newDraft(date), side: s, date, same: false }; }
     function startFlip(kind, corner) {
       if (flipping || op) return null;
+      commitSel();
       deselect();
       QD.closePopover();
       if (document.activeElement && spread.contains(document.activeElement)) document.activeElement.blur();
@@ -1463,6 +1752,7 @@
         ['Apple Pencil', 'Writes in any tool. Fingers scroll, type and move things.'],
         ['Pinch', 'Zoom in and out with two fingers (or a trackpad / Ctrl + scroll)'],
         ['2-finger tap', 'Undo drawing'], ['3-finger tap', 'Redo drawing'],
+        ['L', 'Lasso: circle to select, drag to move'], ['Scribble', 'Scratch over ink with the pen to erase it'],
         ['\\', 'Hide / show the toolbar'], ['Ctrl+ = / - / 0', 'Zoom in / out / fit'],
         ['T', 'Type & arrange'], ['P / M / H', 'Pen / marker / highlighter'], ['X', 'Pixel brush'], ['E', 'Eraser'],
         ['[ and ]', 'Brush size'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo drawing'], ['Delete', 'Remove selected item'],
@@ -1491,8 +1781,9 @@
       if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redoOp() : undo(); return; }
       if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redoOp(); return; }
       if (mod || e.altKey) return;
+      if ((e.key === 'Delete' || e.key === 'Backspace') && sel) { e.preventDefault(); selDelete(); return; }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selected) { e.preventDefault(); removeItem(selected); return; }
-      if (e.key === 'Escape') { if (selected) deselect(); else setTool('type'); return; }
+      if (e.key === 'Escape') { if (sel) commitSel(); else if (selected) deselect(); else setTool('type'); return; }
       const t = TOOLS.find(x => x.key === e.key.toLowerCase());
       if (t) { setTool(t.id); return; }
       if ((e.key === '[' || e.key === ']') && tool !== 'type') {
@@ -1530,6 +1821,7 @@
 
     /* ===== teardown ===== */
     return () => {
+      commitSel();
       destroyed = true;
       if (flipping) cancelAnimationFrame(flipping.raf);
       offs.forEach(f => f());

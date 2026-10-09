@@ -135,6 +135,7 @@
         cell.ondblclick = () => QD.app.go('#/day/' + k);
         grid.append(cell);
       }
+      QD.stagger(grid, '.cal-cell', 42);
       drawSide(map);
     }
     function drawSide(map) {
@@ -197,6 +198,7 @@
         if (m !== month) { month = m; list.append(h('h2', { class: 'group-title', text: QD.fmtMonth(m) })); }
         list.append(pageCard(p));
       }
+      QD.stagger(list, '.entry');
     }
     search.addEventListener('input', QD.debounce(() => { query = search.value; draw(); }, 150));
     sortBtn.onclick = () => { sort = sort === 'new' ? 'old' : 'new'; draw(); };
@@ -286,6 +288,7 @@
         }
         g.append(card(e));
       }
+      QD.stagger(grid, '.m-card');
     }
     search.addEventListener('input', QD.debounce(() => { query = search.value; draw(); }, 150));
     sortBtn.onclick = () => { sort = sort === 'new' ? 'old' : 'new'; draw(); };

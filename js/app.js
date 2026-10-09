@@ -29,9 +29,11 @@
   function buildSidebar() {
     const side = document.getElementById('sidebar');
     side.innerHTML = '';
-    const brand = h('a', { class: 'brand', href: '#/day/' + QD.todayKey(), 'aria-label': 'QDiary home' },
-      h('span', { class: 'brand-logo', html: QD.pixelSvg(QD.ICONS.book, { '#': 'var(--accent)' }, 'ic') }),
-      h('span', { class: 'brand-name' }, 'QDiary', h('small', { text: 'pixel notebook' })));
+    const brand = h('div', { class: 'side-head' },
+      h('a', { class: 'brand', href: '#/day/' + QD.todayKey(), 'aria-label': 'QDiary home' },
+        h('span', { class: 'brand-logo', html: QD.pixelSvg(QD.ICONS.book, { '#': 'var(--accent)' }, 'ic') }),
+        h('span', { class: 'brand-name' }, 'QDiary', h('small', { text: 'pixel notebook' }))),
+      h('button', { class: 'icon-btn side-fold', title: 'Hide sidebar', 'aria-label': 'Hide sidebar', html: ic('chevL'), onclick: () => QD.app.toggleSidebar() }));
     const write = h('button', { class: 'btn primary block write-btn', html: `${ic('pencil')}<span>Write today</span>`, onclick: () => { closeDrawer(); QD.app.go('#/day/' + QD.todayKey(), true); } });
     navEl = h('nav', { class: 'nav', 'aria-label': 'Main' });
     countsEls = {};
@@ -118,6 +120,17 @@
   /* mobile drawer */
   function openDrawer() { document.body.classList.add('drawer-open'); }
   function closeDrawer() { document.body.classList.remove('drawer-open'); }
+  const drawerMode = () => matchMedia('(max-width: 1180px)').matches;
+  // wide screens: fold the sidebar away; narrow screens / iPad: slide-in drawer
+  QD.app.toggleSidebar = () => {
+    if (drawerMode()) { document.body.classList.toggle('drawer-open'); return; }
+    const folded = document.body.classList.toggle('side-collapsed');
+    try { localStorage.setItem('qd.side', folded ? '0' : '1'); } catch (e) { /* ignore */ }
+  };
+  try {
+    const saved = localStorage.getItem('qd.side');
+    if (saved === '0' || (saved == null && QD.isTablet)) document.body.classList.add('side-collapsed');
+  } catch (e) { /* ignore */ }
 
   async function boot() {
     try {
@@ -129,7 +142,7 @@
     }
     QD.applySettings();
     document.getElementById('menu-btn').innerHTML = ic('menu');
-    document.getElementById('menu-btn').onclick = openDrawer;
+    document.getElementById('menu-btn').onclick = () => QD.app.toggleSidebar();
     document.getElementById('scrim').onclick = closeDrawer;
     document.getElementById('mobile-brand').innerHTML = QD.pixelSvg(QD.ICONS.book, { '#': 'var(--accent)' }, 'ic') + '<span>QDiary</span>';
     buildSidebar();

@@ -149,7 +149,7 @@
       row('Apple Pencil in Type mode', 'Draw: the pencil always writes ink. Scribble: iPadOS turns your handwriting into typed text.', seg([['draw', 'Draw'], ['scribble', 'Scribble to text']], st.pencil || 'draw', v => set('pencil', v), 'Pencil in type mode')),
       row('Pencil writes with', 'The tool the pencil uses while you are in Type mode', seg([['pen', 'Pen'], ['marker', 'Marker'], ['pixel', 'Pixel brush']], st.pencilTool || 'pen', v => set('pencilTool', v), 'Pencil tool')),
       row('Scribble to erase', 'Scratch quickly back and forth over ink with the pen or marker to delete it — no need to switch to the eraser.', toggle(st.scratchErase !== false, v => set('scratchErase', v), 'Scribble to erase')),
-      row('Finger drawing', 'Auto: fingers draw until a pencil is used, then fingers only scroll and move things — your palm can rest on the page.', seg([['auto', 'Auto'], ['on', 'Always'], ['off', 'Never']], st.fingerDraw || 'auto', v => set('fingerDraw', v), 'Finger drawing')),
+      row('Finger drawing', 'Auto: on iPad the pencil draws while fingers scroll, pinch-zoom and move things, so your palm can rest on the page. On other touch screens fingers draw until a pencil is used.', seg([['auto', 'Auto'], ['on', 'Always'], ['off', 'Never']], st.fingerDraw || 'auto', v => set('fingerDraw', v), 'Finger drawing')),
       h('div', { class: 'tip', html: `${ic('book')}<span>Turn pages like a real notebook: drag the top or bottom corner of the right page to go to the next day, or a left-page corner to go back. A quick tap on a corner works too.</span>` })));
 
     /* ----- Categories ----- */

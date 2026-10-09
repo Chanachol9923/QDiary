@@ -23,8 +23,11 @@ Everything is stored privately in your browser with IndexedDB on this device. Yo
 - **Turn pages by the corner**: drag the top-right or bottom-right corner to curl the page over to the next day, or a left-page corner to go back to yesterday. A tap on a corner, the arrow buttons, or Alt+← / Alt+→ turn the page too.
 - **Fits the screen**: two pages in landscape, one page in portrait (phones and iPad held upright), with zoom controls in the status bar.
 - **GoodNotes-style workspace**: one slim toolbar (date and page turning on the left, tools in the middle with each pen's color shown under it, undo/redo on the right). A floating palette under the toolbar shows colors and three sizes for the current tool; text formatting appears only while you type. One **+** button adds a photo, voice note, sticker, washi tape, sticky note or paper. Hide the toolbar (**\** or the ⌃ button) for a clean page with a tiny floating dock.
-- **Pinch to zoom**: two fingers zoom around the spot you pinch, and you can pan while you do it. A trackpad pinch or Ctrl + scroll works on a computer. A two-finger tap undoes the last stroke and a three-finger tap redoes it.
-- **Scribble to erase**: scratch quickly back and forth over ink with the pen or marker to delete it, with no need to switch to the eraser. It can be turned off in Settings.
+- **Pinch to zoom**: two fingers zoom around the spot you pinch, and you can pan while you do it. During the gesture the page only moves on the GPU, so it stays smooth. A trackpad pinch or Ctrl + scroll works on a computer. A two-finger tap undoes the last stroke and a three-finger tap redoes it.
+- **Scribble to erase**: scratch quickly back and forth over ink with the pen or marker to delete it, with no need to switch to the eraser. A little pixel "poof" shows what happened, and the toast has an Undo button. It can be turned off in Settings.
+- **Lasso**: circle ink, stickers or photos to select them, then drag the selection anywhere, even onto the other page. You can also duplicate or delete it, and undo restores ink and items together.
+- **Pencil-first on iPad**: the pencil draws in any tool, while fingers scroll, pinch-zoom, move things and drag lasso selections. The sidebar starts folded on iPad, and can be folded away on any screen with the « button.
+- **Lively, not busy**: small hops on tool changes, a swaying ribbon, a page corner that peeks to show it can be turned, and cascading cards. Everything stays still if the system's reduce-motion setting is on.
 - **Export PDF**: one day, a month, a date range or everything, either as two-page spreads or one page per sheet, at the diary's real page size (Ctrl+P on a page).
 - **iPad & Apple Pencil**: the pencil writes with pressure in any tool, even while typing. Once a pencil is used, fingers only scroll and move things, so your palm can rest on the page. Optional Scribble mode turns handwriting into typed text. Touch targets are larger on touch screens.
 - **Type**: handwriting-style fonts sit on the paper lines. You get bold, italic, underline, strikethrough, text color, highlight, bullet lists, checkboxes and time stamps.
@@ -49,7 +52,7 @@ Everything is stored privately in your browser with IndexedDB on this device. Yo
 
 | Keys | Action |
 | --- | --- |
-| T / P / M / H / X / E | Type, pen, marker, highlighter, pixel brush, eraser |
+| T / P / M / H / X / E / L | Type, pen, marker, highlighter, pixel brush, eraser, lasso |
 | [ and ] | Brush size |
 | Ctrl+Z / Ctrl+Y | Undo / redo drawing |
 | Delete | Remove the selected item |

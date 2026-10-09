@@ -168,6 +168,17 @@ body[data-view="journal"] .main { overflow: hidden; }
 @keyframes viewIn { from { opacity: 0; translate: 0 8px; } }
 
 .mobile-bar { display: none; }
+.side-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.side-fold { flex: none; }
+.sidebar { transition: margin-left .22s cubic-bezier(.2, .8, .2, 1); }
+@media (min-width: 1181px) {
+  body.side-collapsed .sidebar { margin-left: -271px; }
+  body.side-collapsed .drawer-btn { display: inline-grid !important; }
+  body.side-collapsed:not([data-view="journal"]) .mobile-bar { display: flex; align-items: center; gap: 10px; height: 54px; padding: 0 12px; position: sticky; top: 0; z-index: 30; background: var(--surface); border-bottom: 3px solid var(--line); }
+  body.side-collapsed:not([data-view="journal"]) .mobile-brand { display: flex; align-items: center; gap: 8px; font: 700 21px var(--font-display); }
+  body.side-collapsed:not([data-view="journal"]) .mobile-brand .ic { width: 28px; height: 28px; }
+  body.side-collapsed:not([data-view="journal"]) #app { height: calc(100dvh - 54px); }
+}
 .scrim { display: none; }
 
 /* ---------- sidebar ---------- */
@@ -885,7 +896,7 @@ div.p-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .save-dot[data-state="saving"] .ic { animation: blink .6s steps(2) infinite; }
 
 .j-stage { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.j-scroll { touch-action: pan-x pan-y; }
+.j-scroll { touch-action: pan-x pan-y; scrollbar-gutter: stable both-edges; }
 .book.pinching { will-change: transform; }
 .book.pinching .corner::before { opacity: 0; }
 
@@ -962,6 +973,72 @@ div.p-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .j-zoom.zoomed { display: flex; }
   .j-zoom.zoomed > :not(.zoom-label) { display: none; }
   .j-zoom.zoomed .zoom-label::after { content: ' · Fit'; opacity: .6; }
+}
+
+/* lasso selection */
+.book[data-tool="lasso"] .p-live { cursor: crosshair; }
+.lasso-float { position: absolute; z-index: 6; pointer-events: none; filter: drop-shadow(0 4px 8px rgba(30, 15, 25, .28)); }
+.lasso-box { position: absolute; z-index: 7; pointer-events: none; border: 2px dashed var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius: 6px; animation: lassoIn .16s steps(3); }
+.lasso-box.dragging { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+@keyframes lassoIn { from { opacity: 0; scale: .96; } }
+.lasso-bar {
+  position: absolute; left: 50%; bottom: calc(100% + 10px); pointer-events: auto; display: flex; gap: 2px; padding: 4px; white-space: nowrap;
+  transform: translateX(-50%) scale(calc(1 / var(--nb-scale, 1))); transform-origin: 50% 100%;
+  background: var(--surface); color: var(--ink);
+  box-shadow: 0 -3px 0 0 var(--line), 0 3px 0 0 var(--line), -3px 0 0 0 var(--line), 3px 0 0 0 var(--line), 0 7px 0 0 var(--shadow);
+}
+.lasso-bar.below { bottom: auto; top: calc(100% + 10px); transform-origin: 50% 0; }
+:root[data-ui="soft"] .lasso-bar { border-radius: 12px; box-shadow: 0 0 0 2px var(--line), 0 5px 0 0 var(--shadow); }
+.item.in-lasso { outline: 2px dashed var(--accent); outline-offset: 4px; }
+.pal-hint { display: flex; align-items: center; gap: 8px; padding: 0 6px; font: 700 13px var(--font-ui); color: var(--ink2); white-space: nowrap; }
+.pal-hint .ic { width: 20px; height: 20px; color: var(--accent); }
+.book-wrap.pinching { will-change: transform; }
+.poof { position: absolute; z-index: 9; width: 0; height: 0; pointer-events: none; }
+.poof i { position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; background: var(--ink2); transform: rotate(var(--a)) translateX(4px); animation: poofOut .55s steps(6) forwards; }
+@keyframes poofOut { to { transform: rotate(var(--a)) translateX(42px) scale(.3); opacity: 0; } }
+
+/* ---------- a little life ---------- */
+@keyframes hop { 0% { transform: translateY(0) scale(1); } 35% { transform: translateY(-5px) scale(1.08); } 65% { transform: translateY(1px) scale(.97); } 100% { transform: none; } }
+@keyframes popIn2 { 0% { transform: scale(.4); } 60% { transform: scale(1.25); } 100% { transform: scale(1); } }
+@keyframes rise { from { opacity: 0; translate: 0 14px; } }
+@keyframes wiggle { 0%, 100% { rotate: 0deg; } 25% { rotate: -7deg; } 75% { rotate: 7deg; } }
+@keyframes sway { 0%, 100% { rotate: -1.2deg; } 50% { rotate: 1.2deg; } }
+@keyframes settle { 0% { scale: 1.06; } 55% { scale: .97; } 100% { scale: 1; } }
+@keyframes peek { 0%, 86%, 100% { width: 22px; height: 22px; } 91% { width: 42px; height: 42px; } 95% { width: 30px; height: 30px; } }
+@keyframes ants { to { background-position: 12px 0, -12px 100%, 0 -12px, 100% 12px; } }
+
+.jb.hop .ic, .nav-item:hover .ic, .ins-tile:hover .ic { animation: hop .38s ease-out; }
+.save-dot.pop .ic { animation: popIn2 .35s ease-out; }
+.j-palette .sw.active, .seg-btn.active, .chip.active { animation: popIn2 .25s ease-out; }
+.btn:hover:not(:disabled) { translate: 0 -1px; }
+.brand:hover .brand-logo { animation: wiggle .45s steps(4); }
+.write-btn:hover .ic { animation: wiggle .5s steps(4); }
+.ribbon { transform-origin: 50% 0; animation: sway 5s ease-in-out infinite; }
+.c-br::before { animation: peek 7s ease-in-out 2.5s infinite; }
+.book.flipping .c-br::before, .book.pinching .c-br::before { animation: none; }
+.p-chip .emo { display: inline-block; animation: popIn2 .35s ease-out; }
+.p-stamp { transition: rotate .2s; }
+.p-stamp:hover { rotate: 2deg; }
+.item.settle { animation: settle .32s ease-out; }
+@media (hover: hover) {
+  .book[data-tool="type"] .it-sticker:hover svg { animation: wiggle .45s steps(4); }
+  .book[data-tool="type"] .item.polaroid:hover { filter: drop-shadow(0 6px 8px rgba(30, 15, 25, .18)); }
+}
+.entry, .m-card { animation: rise .32s ease-out backwards; animation-delay: calc(var(--i, 0) * 32ms); }
+.cal-cell { animation: rise .26s ease-out backwards; animation-delay: calc(var(--i, 0) * 9ms); }
+.cal-cell:hover:not(.out) { translate: 0 -2px; }
+.theme-tile.active .tt-dot, .font-tile.active .ft-name b { animation: popIn2 .3s ease-out; }
+.empty-art .ic { animation: wiggle 2.4s steps(4) infinite; }
+/* marching ants around a lasso selection */
+.lasso-box {
+  border: 0;
+  background:
+    linear-gradient(90deg, var(--accent) 50%, transparent 0) repeat-x 0 0 / 12px 2px,
+    linear-gradient(90deg, var(--accent) 50%, transparent 0) repeat-x 0 100% / 12px 2px,
+    linear-gradient(0deg, var(--accent) 50%, transparent 0) repeat-y 0 0 / 2px 12px,
+    linear-gradient(0deg, var(--accent) 50%, transparent 0) repeat-y 100% 0 / 2px 12px,
+    color-mix(in srgb, var(--accent) 6%, transparent);
+  animation: lassoIn .16s steps(3), ants .7s linear infinite;
 }
 
 /* bigger targets for fingers (iPad / phones) */
