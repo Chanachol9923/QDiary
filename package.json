@@ -1,0 +1,11 @@
+{
+  "name": "qdiary",
+  "version": "1.0.0",
+  "description": "A cozy pixel-art diary: write, draw, stick photos and voice notes.",
+  "private": true,
+  "scripts": {
+    "start": "node server.js --open",
+    "serve": "node server.js",
+    "lan": "node server.js --lan"
+  }
+}

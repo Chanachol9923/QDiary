@@ -1,0 +1,5 @@
+node_modules/
+.claude/
+.vercel/
+*.log
+_import_test.*
