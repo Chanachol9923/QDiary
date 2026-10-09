@@ -148,6 +148,7 @@
       row('Page layout', 'Auto shows two pages in landscape and one page in portrait', seg([['auto', 'Auto'], ['single', 'One page'], ['spread', 'Two pages']], st.layout || 'auto', v => set('layout', v), 'Page layout')),
       row('Apple Pencil in Type mode', 'Draw: the pencil always writes ink. Scribble: iPadOS turns your handwriting into typed text.', seg([['draw', 'Draw'], ['scribble', 'Scribble to text']], st.pencil || 'draw', v => set('pencil', v), 'Pencil in type mode')),
       row('Pencil writes with', 'The tool the pencil uses while you are in Type mode', seg([['pen', 'Pen'], ['marker', 'Marker'], ['pixel', 'Pixel brush']], st.pencilTool || 'pen', v => set('pencilTool', v), 'Pencil tool')),
+      row('Scribble to erase', 'Scratch quickly back and forth over ink with the pen or marker to delete it — no need to switch to the eraser.', toggle(st.scratchErase !== false, v => set('scratchErase', v), 'Scribble to erase')),
       row('Finger drawing', 'Auto: fingers draw until a pencil is used, then fingers only scroll and move things — your palm can rest on the page.', seg([['auto', 'Auto'], ['on', 'Always'], ['off', 'Never']], st.fingerDraw || 'auto', v => set('fingerDraw', v), 'Finger drawing')),
       h('div', { class: 'tip', html: `${ic('book')}<span>Turn pages like a real notebook: drag the top or bottom corner of the right page to go to the next day, or a left-page corner to go back. A quick tap on a corner works too.</span>` })));
 
@@ -227,6 +228,7 @@
       h('p', { class: 'muted', text: 'Everything lives privately in this browser on this device — nothing is uploaded anywhere. Export now and then to keep your memories safe, or to use them in other apps.' }),
       row('Your diary', `${pages} days · ${photos} photos · ${voices} voice notes`, usage),
       row('Everything (.zip)', 'Spreadsheet + every photo, voice note and drawing as files + one Markdown file per day. Import it back to restore all of it.', h('button', { class: 'btn primary', html: `${ic('download')}<span>Export .zip</span>`, onclick: job('export', () => QD.transfer.exportZip()) })),
+      row('PDF', 'Printable diary pages — one day, a month or everything, as two-page spreads or single pages', h('button', { class: 'btn', html: `${ic('print')}<span>Export PDF…</span>`, onclick: () => QD.pdfDialog({}) })),
       row('Spreadsheet (.xlsx)', 'Excel / Google Sheets / Numbers: Entries, Photos, Voice notes and Categories sheets. Edit it and import it back.', h('button', { class: 'btn', html: `${ic('list')}<span>Export .xlsx</span>`, onclick: job('spreadsheet', () => QD.transfer.exportXlsx()) })),
       row('Entries (.csv)', 'Plain table of all days (UTF-8), for any app', h('button', { class: 'btn', html: `${ic('file')}<span>Export .csv</span>`, onclick: job('CSV', async () => QD.transfer.exportCsv()) })),
       row('Single-file backup (.json)', 'Everything in one file with media embedded', h('button', { class: 'btn', html: `${ic('download')}<span>Export .json</span>`, onclick: job('backup', async () => QD.download(new Blob([JSON.stringify(await S.exportAll())], { type: 'application/json' }), `qdiary-backup-${QD.todayKey()}.json`)) })),

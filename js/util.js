@@ -213,6 +213,7 @@ window.QD = window.QD || {};
     const list = QD.h('div', { class: 'menu' });
     for (const it of items) {
       if (it === '-') { list.append(QD.h('div', { class: 'menu-sep' })); continue; }
+      if (it.info) { list.append(QD.h('div', { class: 'menu-info' }, QD.h('b', { text: it.info }), it.sub ? QD.h('small', { text: it.sub }) : null)); continue; }
       list.append(QD.h('button', {
         class: 'menu-item' + (it.danger ? ' danger' : '') + (it.active ? ' active' : ''),
         html: (it.icon ? QD.ic(it.icon) : '') + `<span>${QD.esc(it.label)}</span>` + (it.hint ? `<kbd>${QD.esc(it.hint)}</kbd>` : ''),

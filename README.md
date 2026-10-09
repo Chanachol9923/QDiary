@@ -22,6 +22,10 @@ Everything is stored privately in your browser with IndexedDB on this device. Yo
 - **A book, one day per spread**: each day has a left and a right page with spiral rings down the middle. The left page has a date stamp, title, mood, weather and category; the right page is for more writing. Each page can have its own paper: lined, grid, dot grid, blank, pixel grid, gingham, sakura, mint graph, legal pad, kraft, starry night or chalkboard.
 - **Turn pages by the corner**: drag the top-right or bottom-right corner to curl the page over to the next day, or a left-page corner to go back to yesterday. A tap on a corner, the arrow buttons, or Alt+← / Alt+→ turn the page too.
 - **Fits the screen**: two pages in landscape, one page in portrait (phones and iPad held upright), with zoom controls in the status bar.
+- **GoodNotes-style workspace**: one slim toolbar (date and page turning on the left, tools in the middle with each pen's color shown under it, undo/redo on the right). A floating palette under the toolbar shows colors and three sizes for the current tool; text formatting appears only while you type. One **+** button adds a photo, voice note, sticker, washi tape, sticky note or paper. Hide the toolbar (**\** or the ⌃ button) for a clean page with a tiny floating dock.
+- **Pinch to zoom**: two fingers zoom around the spot you pinch, and you can pan while you do it. A trackpad pinch or Ctrl + scroll works on a computer. A two-finger tap undoes the last stroke and a three-finger tap redoes it.
+- **Scribble to erase**: scratch quickly back and forth over ink with the pen or marker to delete it, with no need to switch to the eraser. It can be turned off in Settings.
+- **Export PDF**: one day, a month, a date range or everything, either as two-page spreads or one page per sheet, at the diary's real page size (Ctrl+P on a page).
 - **iPad & Apple Pencil**: the pencil writes with pressure in any tool, even while typing. Once a pencil is used, fingers only scroll and move things, so your palm can rest on the page. Optional Scribble mode turns handwriting into typed text. Touch targets are larger on touch screens.
 - **Type**: handwriting-style fonts sit on the paper lines. You get bold, italic, underline, strikethrough, text color, highlight, bullet lists, checkboxes and time stamps.
 - **Draw**: pen (pressure-sensitive with a stylus), marker, highlighter, an 8-bit pixel brush and an eraser. Undo and redo work for drawings.
@@ -52,6 +56,10 @@ Everything is stored privately in your browser with IndexedDB on this device. Yo
 | Shift while rotating | Snap rotation to 15° |
 | Drag or tap a page corner | Next day (right corners) / previous day (left corners) |
 | Alt+← / Alt+→, PageUp / PageDown | Turn back / forward |
+| Pinch / two-finger tap / three-finger tap | Zoom / undo / redo |
+| Ctrl + = / - / 0 | Zoom in / out / fit |
+| \ | Hide or show the toolbar |
+| Ctrl+P | Export PDF |
 | Ctrl+S | Save now |
 | Esc | Deselect / back to typing |
 
@@ -67,6 +75,7 @@ Everything is stored privately in your browser with IndexedDB on this device. Yo
 | `js/theme.js` | Themes, fonts, papers, applying settings |
 | `js/media.js` | Photo processing, voice recorder, Web Audio player |
 | `js/journal.js` | The two-page book: editor, drawing, Pencil handling, page-curl turning, mini calendar |
+| `js/pdf.js` | Export PDF: print-ready diary pages |
 | `js/transfer.js` | Export/import: ZIP and XLSX writers/readers, CSV, Markdown |
 | `js/views.js` | Calendar, Entries, Photos and Voice notes library |
 | `js/settings.js` | Settings page |

@@ -23,7 +23,8 @@
   const HL_SWATCHES = ['#ffe45c', '#ff9ec4', '#8ff0bf', '#9ed2ff', '#cdb4ff', '#ffbf80'];
   const TEXT_COLORS = ['#3a3340', '#ff4d7e', '#ff8a3d', '#e0a800', '#22a861', '#2f7cf6', '#7c4dff', '#9b9b9b'];
   const MARK_COLORS = ['#fff176', '#ffc1d9', '#b8f5d4', '#c4e2ff', '#e2d4ff', '#ffd9b3'];
-  const ZOOMS = [0.75, 1, 1.25, 1.5, 2];
+  const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+  const SIZE_PRESETS = { pen: [2, 3, 6], marker: [6, 10, 20], highlight: [14, 22, 36], pixel: [4, 8, 16], eraser: [12, 24, 60] };
 
   const prefs = (() => {
     let p = {};
@@ -142,6 +143,7 @@
     return el;
   }
 
+  QD.staticSide = staticSide;
   QD.views = QD.views || {};
   QD.views.journal = function (root, params) {
     const page = resolvePage(params);
@@ -164,14 +166,14 @@
     /* ===== skeleton ===== */
     root.classList.add('view-journal');
     if (arrived.noAnim) root.classList.add('no-anim');
-    const topBar = h('div', { class: 'j-top' });
-    const toolbar = h('div', { class: 'j-tools bx', role: 'toolbar', 'aria-label': 'Page tools' });
-    const sub = h('div', { class: 'j-sub' });
+    root.classList.toggle('focus', !!prefs.focus);
+    const bar = h('div', { class: 'j-bar', role: 'toolbar', 'aria-label': 'Page tools' });
+    const palette = h('div', { class: 'j-palette bx' });
     const scroller = h('div', { class: 'j-scroll' });
-    const statusLeft = h('div', { class: 'js-left' });
-    const statusRight = h('div', { class: 'js-right' });
-    const statusBar = h('div', { class: 'j-status' }, statusLeft, statusRight);
-    root.append(topBar, h('div', { class: 'j-toolwrap' }, toolbar, sub), scroller, statusBar);
+    const zoomCtl = h('div', { class: 'j-zoom bx' });
+    const zoomHud = h('div', { class: 'zoom-hud' });
+    const dock = h('div', { class: 'j-dock bx' });
+    root.append(bar, h('div', { class: 'j-stage' }, scroller, palette, zoomCtl, zoomHud, dock));
 
     /* ===== the book ===== */
     const sides = [0, 1].map(i => {
@@ -204,7 +206,6 @@
     scroller.append(wrap, moreBtn);
 
     /* ===== save plumbing ===== */
-    let statusEl = null;
     function changed() {
       if (destroyed) return;
       if (page.draft) {
@@ -218,43 +219,99 @@
     const setStatus = st => {
       if (!statusEl) return;
       statusEl.dataset.state = st;
-      statusEl.innerHTML = st === 'saving' ? `${ic('clock')}<span>Saving…</span>` : st === 'saved' ? `${ic('check')}<span>Saved</span>` : `${ic('pencil')}<span>Blank day</span>`;
+      statusEl.innerHTML = st === 'saving' ? ic('clock') : st === 'saved' ? ic('check') : ic('pencil');
+      statusEl.title = st === 'saving' ? 'Saving…' : st === 'saved' ? 'All changes saved' : 'Blank day — start writing to keep it';
     };
     offs.push(S.on('saving', id => { if (id === page.id) setStatus('saving'); }));
-    offs.push(S.on('saved', id => { if (id === page.id) { setStatus('saved'); updateStatusBar(); } }));
+    offs.push(S.on('saved', id => { if (id === page.id) setStatus('saved'); }));
 
-    /* ===== top bar ===== */
-    function renderTop() {
+    /* ===== top bar (GoodNotes-style: one slim row) ===== */
+    let statusEl = null, undoBtn = null, redoBtn = null;
+    const jb = (icon, label, fn, cls = '') => h('button', { class: 'jb ' + cls, title: label, 'aria-label': label, html: ic(icon), onclick: e => fn(e.currentTarget) });
+    function renderBar() {
       const day = S.pagesOn(page.date);
-      const isToday = page.date === QD.todayKey();
-      topBar.innerHTML = '';
-      const drawerBtn = h('button', { class: 'icon-btn bx drawer-btn', 'aria-label': 'Open menu', html: ic('menu'), onclick: () => document.body.classList.add('drawer-open') });
-      const prevBtn = h('button', { class: 'icon-btn bx', title: 'Turn back (Alt+←)', 'aria-label': 'Turn back', html: ic('chevL'), onclick: () => flipTo('prev') });
-      const nextBtn = h('button', { class: 'icon-btn bx', title: 'Turn forward (Alt+→)', 'aria-label': 'Turn forward', html: ic('chevR'), onclick: () => flipTo('next') });
-      const dateBtn = h('button', { class: 'j-date', title: 'Jump to a date', html: `${ic('calendar')}<span class="jd-main"><b>${QD.esc(QD.fmtDate(page.date, 'long'))}</b></span>${ic('chevD')}` });
-      dateBtn.onclick = () => QD.popover(dateBtn, QD.miniCal({ selected: page.date, onPick: k => { QD.closePopover(); QD.app.go('#/day/' + k); } }), { cls: 'pop-cal' });
+      const d = QD.parseKey(page.date);
+      bar.innerHTML = '';
+      const dateBtn = h('button', { class: 'jb-date', title: 'Jump to a date', html: `<span class="jd-long">${QD.esc(QD.fmtDate(page.date, 'long'))}</span><span class="jd-short">${QD.WEEKDAYS[d.getDay()].slice(0, 3)}, ${QD.MONTHS[d.getMonth()].slice(0, 3)} ${d.getDate()}</span>${ic('chevD')}` });
+      dateBtn.onclick = () => QD.popover(dateBtn, h('div', {},
+        QD.miniCal({ selected: page.date, onPick: k => { QD.closePopover(); QD.app.go('#/day/' + k); } }),
+        page.date !== QD.todayKey() ? h('button', { class: 'btn sm block', html: `${ic('sparkle')}<span>Go to today</span>`, onclick: () => { QD.closePopover(); QD.app.go('#/day/' + QD.todayKey()); } }) : null), { cls: 'pop-cal' });
       let legacy = null;
       if (day.length > 1 && !page.draft) {
         const i = day.indexOf(page);
-        legacy = h('button', { class: 'btn sm ghost', title: 'This day has more than one entry', text: `Entry ${i + 1}/${day.length}`, onclick: () => QD.app.go('#/page/' + day[(i + 1) % day.length].id) });
+        legacy = h('button', { class: 'jb-chip', title: 'This day has more than one entry', text: `${i + 1}/${day.length}`, onclick: () => QD.app.go('#/page/' + day[(i + 1) % day.length].id) });
       }
-      statusEl = h('span', { class: 'save-chip' });
+      const nav = h('div', { class: 'jb-group jb-nav' },
+        jb('menu', 'Open menu', () => document.body.classList.add('drawer-open'), 'drawer-btn'),
+        jb('chevL', 'Turn back (Alt+←)', () => flipTo('prev')), dateBtn, jb('chevR', 'Turn forward (Alt+→)', () => flipTo('next')), legacy);
+      const tools = h('div', { class: 'jb-group jb-tools' });
+      for (const t of TOOLS) {
+        const b = h('button', { class: 'jb tool' + (t.id === tool ? ' active' : ''), 'data-tool': t.id, 'aria-pressed': String(t.id === tool), title: `${t.label} (${t.key.toUpperCase()})`, 'aria-label': t.label, html: ic(t.icon) });
+        b.onclick = () => { if (tool === t.id && t.id !== 'type') { paletteHidden = !paletteHidden; renderPalette(); } else setTool(t.id); };
+        tools.append(b);
+      }
+      tools.append(h('span', { class: 'jb-sep' }), jb('plus', 'Add photo, voice note, sticker…', a => insertMenu(a), 'jb-plus'));
+      undoBtn = jb('undo', 'Undo drawing (Ctrl+Z · two-finger tap)', undo);
+      redoBtn = jb('redo', 'Redo drawing (Ctrl+Y · three-finger tap)', redoOp);
+      statusEl = h('span', { class: 'save-dot', role: 'status' });
       setStatus(page.draft ? 'new' : 'saved');
-      const paperBtn = h('button', { class: 'btn sm', title: 'Change paper', html: `${ic('paper')}<span class="hide-sm">Paper</span>` });
-      paperBtn.onclick = () => openPaperPicker(paperBtn);
-      const moreBtn2 = h('button', { class: 'icon-btn bx', title: 'More', 'aria-label': 'More options', html: ic('dots') });
-      moreBtn2.onclick = () => QD.menu(moreBtn2, [
-        { icon: 'calendar', label: 'Move to another day…', onClick: () => moveDate(moreBtn2) },
+      const actions = h('div', { class: 'jb-group jb-actions' }, statusEl, undoBtn, redoBtn,
+        jb('dots', 'More', a => moreMenu(a)), jb('chevU', 'Hide toolbar (\\)', () => setFocus(true), 'jb-collapse'));
+      bar.append(nav, tools, actions);
+      updateToolColors();
+      updateUndo();
+    }
+    function updateToolColors() {
+      QD.$$('.jb.tool', bar).forEach(b => {
+        const t = b.dataset.tool;
+        b.style.setProperty('--tc', t === 'type' || t === 'eraser' ? 'transparent' : inkColor(t, single ? side * W : 0));
+      });
+    }
+    function insertMenu(anchor) {
+      const tile = (icon, label, fn) => h('button', { class: 'ins-tile', html: `${ic(icon)}<span>${label}</span>`, onclick: () => { QD.closePopover(); fn(); } });
+      QD.popover(anchor, h('div', { class: 'ins-grid' },
+        tile('photo', 'Photo', () => fileIn.click()),
+        tile('mic', 'Voice note', recordVoice),
+        tile('note', 'Sticky note', addNote),
+        tile('sticker', 'Sticker', () => stickerPicker(anchor)),
+        tile('tape', 'Washi tape', () => tapePicker(anchor)),
+        tile('paper', 'Paper', () => openPaperPicker(anchor))), { cls: 'pop-ins', align: 'center' });
+    }
+    function moreMenu(anchor) {
+      const t = page.text || '', words = QD.countWords(t), chars = QD.countChars(t);
+      const nP = page.items.filter(i => i.type === 'photo').length, nV = page.items.filter(i => i.type === 'voice').length;
+      const extra = [nP && `${nP} photo${nP > 1 ? 's' : ''}`, nV && `${nV} voice note${nV > 1 ? 's' : ''}`].filter(Boolean).join(' · ');
+      QD.menu(anchor, [
+        { info: `${words} ${words === 1 ? 'word' : 'words'} · ${chars} characters${extra ? ' · ' + extra : ''}`, sub: page.draft ? 'Blank day — start writing to keep it' : `Edited ${QD.timeAgo(page.updatedAt)}` },
+        { icon: 'paper', label: 'Paper…', onClick: () => openPaperPicker(anchor) },
+        { icon: 'calendar', label: 'Move to another day…', onClick: () => moveDate(anchor) },
         { icon: single ? 'spread' : 'single', label: single ? 'Show two pages' : 'Show one page', onClick: toggleLayout },
-        { icon: 'print', label: 'Print / save as PDF', onClick: () => window.print() },
+        { icon: 'expand', label: 'Fit page to screen', hint: 'Ctrl+0', onClick: () => zoomTo(1) },
+        { icon: 'chevU', label: 'Hide toolbar', hint: '\\', onClick: () => setFocus(true) },
+        { icon: 'print', label: 'Export PDF…', hint: 'Ctrl+P', onClick: exportPdf },
         { icon: 'help', label: 'Shortcuts & gestures', onClick: showShortcuts },
         '-',
         { icon: 'trash', label: 'Delete this day', danger: true, onClick: deletePage },
       ], { align: 'end' });
-      topBar.append(
-        h('div', { class: 'j-nav' }, drawerBtn, prevBtn, dateBtn, nextBtn, legacy,
-          isToday ? null : h('button', { class: 'btn sm ghost', text: 'Today', onclick: () => QD.app.go('#/day/' + QD.todayKey()) })),
-        h('div', { class: 'j-actions' }, statusEl, paperBtn, moreBtn2));
+    }
+    function exportPdf() {
+      saveInk.now();
+      if (!page.draft) S.flush(page.id);
+      QD.pdfDialog({ date: page.date, live: { pageId: page.id, inks: sides.map(sd => sd.ink) } });
+    }
+    function setFocus(on) {
+      prefs.focus = on; savePrefs();
+      root.classList.toggle('focus', on);
+      renderPalette(); renderDock();
+      QD.sfx('click');
+    }
+    function renderDock() {
+      dock.innerHTML = '';
+      const cur = TOOL[tool];
+      dock.append(
+        jb(cur.icon, tool === 'type' ? 'Switch to ' + TOOL[prefs.lastDraw || 'pen'].label.toLowerCase() : 'Switch to typing', () => setTool(tool === 'type' ? (prefs.lastDraw || 'pen') : 'type'), tool !== 'type' ? 'active' : ''),
+        jb('undo', 'Undo drawing', undo),
+        jb('chevD', 'Show toolbar (\\)', () => setFocus(false)));
     }
 
     function moveDate(anchor) {
@@ -356,7 +413,7 @@
             if (!page.draft) changed();
             QD.sfx('click');
             drawTiles();
-            renderSub();
+            renderPalette(); updateToolColors();
           };
           grid.append(tile);
         }
@@ -379,12 +436,15 @@
       page.html2 = sides[1].body.innerHTML;
       page.text = [textOf(sides[0].body), textOf(sides[1].body)].filter(Boolean).join('\n');
       sides.forEach(s => s.body.classList.toggle('is-empty', !textOf(s.body) && !s.body.querySelector('.chk')));
-      clearTimeout(countTimer);
-      countTimer = setTimeout(updateStatusBar, 300);
     }
     sides.forEach(s => s.body.classList.toggle('is-empty', !s.body.textContent.trim() && !s.body.querySelector('.chk')));
     sides.forEach(s => {
-      listen(s.body, 'focus', () => { lastBody = s.body; });
+      listen(s.body, 'focus', () => { lastBody = s.body; textFocused = true; renderPalette(); });
+      listen(s.body, 'blur', () => setTimeout(() => {
+        if (destroyed) return;
+        textFocused = sides.some(x => x.body === document.activeElement);
+        if (!textFocused && !document.querySelector('.pop-sw')) renderPalette();
+      }, 120));
       listen(s.body, 'input', () => { syncBody(); autoGrow(); changed(); });
       listen(s.body, 'paste', e => {
         const cd = e.clipboardData;
@@ -441,7 +501,7 @@
       const was = single;
       single = mode === 'single' || (mode !== 'spread' && (aw < ah * 0.9 || fitSpread < 0.42));
       const fit = single ? Math.min(aw / singleW, ah / bh) : fitSpread;
-      scale = QD.clamp(fit * (prefs.zoom || 1), 0.2, 3);
+      scale = QD.clamp(fit * (prefs.zoom || 1), 0.15, 5);
       const bw = single ? singleW : spreadW, bhh = page.height + 2 * COVER;
       book.classList.toggle('single', single);
       book.style.width = bw + 'px';
@@ -491,29 +551,113 @@
     }
     const sideAt = x => (single ? side : x < W ? 0 : 1);
 
-    /* ===== zoom & layout controls ===== */
-    const zoomLabel = h('button', { class: 'zoom-label', title: 'Fit to screen', onclick: () => { prefs.zoom = 1; savePrefs(); layout(); } });
-    const layoutBtn = h('button', { class: 'icon-btn sm', onclick: () => toggleLayout() });
-    statusRight.append(
-      h('button', { class: 'icon-btn sm', title: 'Zoom out', 'aria-label': 'Zoom out', html: ic('minus'), onclick: () => setZoom(-1) }),
+    /* ===== zoom: buttons, pinch (two fingers), trackpad pinch / Ctrl+wheel ===== */
+    let pinch = null, hudTimer = 0;
+    const zoomLabel = h('button', { class: 'zoom-label', title: 'Fit page to screen', onclick: () => zoomTo(1) });
+    const layoutBtn = h('button', { class: 'jb', onclick: () => toggleLayout() });
+    zoomCtl.append(
+      h('button', { class: 'jb', title: 'Zoom out', 'aria-label': 'Zoom out', html: ic('minus'), onclick: () => setZoom(-1) }),
       zoomLabel,
-      h('button', { class: 'icon-btn sm', title: 'Zoom in', 'aria-label': 'Zoom in', html: ic('plus'), onclick: () => setZoom(1) }),
-      h('span', { class: 'js-sep' }), layoutBtn);
+      h('button', { class: 'jb', title: 'Zoom in', 'aria-label': 'Zoom in', html: ic('plus'), onclick: () => setZoom(1) }),
+      h('span', { class: 'jb-sep' }), layoutBtn);
+    const zoomText = () => ((prefs.zoom || 1) === 1 ? 'Fit' : Math.round(prefs.zoom * 100) + '%');
+    function showHud() {
+      zoomHud.textContent = zoomText();
+      zoomHud.classList.add('show');
+      clearTimeout(hudTimer);
+      hudTimer = setTimeout(() => zoomHud.classList.remove('show'), 650);
+    }
+    // zoom so the point under (cx, cy) stays put
+    function zoomAt(z, cx, cy) {
+      z = QD.clamp(z, 0.5, 4);
+      const r0 = book.getBoundingClientRect(), s0 = scale;
+      const px = (cx - r0.left) / s0, py = (cy - r0.top) / s0;
+      prefs.zoom = Math.abs(z - 1) < 0.03 ? 1 : z;
+      layout();
+      const r1 = book.getBoundingClientRect();
+      scroller.scrollLeft += r1.left - (cx - px * scale);
+      scroller.scrollTop += r1.top - (cy - py * scale);
+      showHud();
+    }
+    function zoomTo(z) {
+      const r = scroller.getBoundingClientRect();
+      zoomAt(z, r.left + r.width / 2, r.top + r.height / 2);
+      if (z === 1) scroller.scrollTo({ left: 0, top: 0 });
+      savePrefs();
+    }
     function setZoom(dir) {
-      const i = ZOOMS.findIndex(z => z >= (prefs.zoom || 1) - 0.001);
-      prefs.zoom = ZOOMS[QD.clamp((i < 0 ? 1 : i) + dir, 0, ZOOMS.length - 1)];
-      savePrefs(); layout(); QD.sfx('click');
+      const cur = prefs.zoom || 1;
+      const next = dir > 0 ? ZOOMS.find(z => z > cur + 0.01) : [...ZOOMS].reverse().find(z => z < cur - 0.01);
+      if (next) zoomTo(next);
+      QD.sfx('click');
     }
     function updateZoomUI() {
-      zoomLabel.textContent = (prefs.zoom || 1) === 1 ? 'Fit' : Math.round(prefs.zoom * 100) + '%';
+      zoomLabel.textContent = zoomText();
+      zoomCtl.classList.toggle('zoomed', (prefs.zoom || 1) !== 1);
       layoutBtn.innerHTML = ic(single ? 'spread' : 'single');
       layoutBtn.title = single ? 'Show two pages' : 'Show one page';
       layoutBtn.setAttribute('aria-label', layoutBtn.title);
     }
     function toggleLayout() {
       S.setSetting('layout', single ? 'spread' : 'single');
-      layout(); renderTop(); QD.sfx('page');
+      layout(); renderBar(); QD.sfx('page');
     }
+    function cancelStroke() {
+      if (!op) return;
+      if (op.tool === 'eraser') sides.forEach(s => s.ctx.restore());
+      op = null;
+      clearCtx(lctx);
+      liveC.style.opacity = 1;
+      redrawInk();
+    }
+    const tdist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    const tmid = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
+    let taps = null; // multi-finger tap detection: 2 fingers = undo, 3 = redo
+    listen(scroller, 'touchstart', e => {
+      const ts = Array.from(e.touches);
+      if (ts.some(t => t.touchType === 'stylus') || flipping) return;
+      if (ts.length >= 2) {
+        e.preventDefault();
+        if (op && op.touch) cancelStroke();
+        taps = taps && performance.now() - taps.t0 < 250 ? { ...taps, n: Math.max(taps.n, ts.length) } : { t0: performance.now(), n: ts.length, moved: false };
+        if (ts.length === 2) {
+          const m = tmid(ts[0], ts[1]);
+          pinch = { d0: tdist(ts[0], ts[1]), z0: prefs.zoom || 1, last: m };
+          book.classList.add('pinching');
+        }
+      }
+    }, { passive: false });
+    listen(scroller, 'touchmove', e => {
+      if (!pinch || e.touches.length < 2) return;
+      e.preventDefault();
+      const [a, b] = e.touches, m = tmid(a, b), d = tdist(a, b);
+      if (taps && (Math.abs(d - pinch.d0) > 10 || Math.hypot(m.x - pinch.last.x, m.y - pinch.last.y) > 10)) taps.moved = true;
+      scroller.scrollLeft -= m.x - pinch.last.x;
+      scroller.scrollTop -= m.y - pinch.last.y;
+      pinch.last = m;
+      zoomAt(pinch.z0 * d / pinch.d0, m.x, m.y);
+    }, { passive: false });
+    const touchEnd = e => {
+      if (e.touches.length >= 2) return;
+      if (taps && !taps.moved && performance.now() - taps.t0 < 320 && e.type === 'touchend' && e.touches.length === 0) {
+        if (taps.n === 2) { if (ops.length) { undo(); QD.toast('Undo', { icon: 'undo', timeout: 900 }); } }
+        else if (taps.n >= 3) { if (redo.length) { redoOp(); QD.toast('Redo', { icon: 'redo', timeout: 900 }); } }
+      }
+      if (e.touches.length === 0) taps = null;
+      if (pinch) { pinch = null; book.classList.remove('pinching'); savePrefs(); }
+    };
+    listen(scroller, 'touchend', touchEnd);
+    listen(scroller, 'touchcancel', touchEnd);
+    let wheelSave = 0;
+    listen(scroller, 'wheel', e => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      zoomAt((prefs.zoom || 1) * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+      clearTimeout(wheelSave);
+      wheelSave = setTimeout(savePrefs, 300);
+    }, { passive: false });
+    // Safari: never zoom the whole app with a pinch
+    listen(document, 'gesturestart', e => e.preventDefault());
 
     /* ===== ink (two canvases, strokes in spread coordinates) ===== */
     // the live (in-progress stroke) canvas covers what's visible: both pages, or just one
@@ -542,7 +686,14 @@
         clearCtx(s.ctx);
         if (baseImgs[i]) { s.ctx.save(); s.ctx.setTransform(1, 0, 0, 1, 0, 0); s.ctx.drawImage(baseImgs[i], 0, 0); s.ctx.restore(); }
       });
-      for (const o of ops) replay(o);
+      const dead = deadIds();
+      for (const o of ops) if (!dead.has(o.id)) replay(o);
+    }
+    // strokes removed by a scratch-out gesture
+    function deadIds() {
+      const dead = new Set();
+      for (const o of ops) if (o.tool === 'delete') o.targets.forEach(t => dead.add(t));
+      return dead;
     }
     const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
     const widthAt = (o, p) => (o.pressure ? o.size * (0.35 + p.p * 1.3) : o.size);
@@ -572,7 +723,7 @@
     }
     function replay(o) {
       if (o.tool === 'clear') { (o.sides || [0, 1]).forEach(i => clearCtx(sides[i].ctx)); return; }
-      if (o.tool === 'eraser') {
+      if (o.tool === 'eraser' || o.tool === 'delete') {
         sides.forEach(s => { s.ctx.save(); s.ctx.globalCompositeOperation = 'destination-out'; strokeSegs(s.ctx, o, 0); strokeEnd(s.ctx, o); s.ctx.restore(); });
         return;
       }
@@ -596,7 +747,64 @@
       if (o.tool === 'clear') return o.sides || [0, 1];
       const xs = o.tool === 'pixel' ? o.cells.flatMap(c => [c[0] * o.size, (c[0] + 1) * o.size]) : o.pts.map(p => p.x);
       const lo = Math.min(...xs) - o.size, hi = Math.max(...xs) + o.size;
-      return [0, 1].filter(i => hi > i * W && lo < (i + 1) * W);
+      const out = new Set([0, 1].filter(i => hi > i * W && lo < (i + 1) * W));
+      if (o.tool === 'delete') for (const id of o.targets) { const t = ops.find(x => x.id === id) || redo.find(x => x.id === id); if (t) opSides(t).forEach(i => out.add(i)); }
+      return [...out];
+    }
+
+    /* ---- scratch-out to erase (like GoodNotes): a quick zig-zag over ink deletes it ---- */
+    const ptsOf = o => (o.tool === 'pixel' ? o.cells.map(c => ({ x: (c[0] + 0.5) * o.size, y: (c[1] + 0.5) * o.size })) : o.pts || []);
+    function isScratch(o) {
+      const pts = o.pts;
+      if (!pts || pts.length < 12 || performance.now() - o.t0 > 1800) return false;
+      let L = 0, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      pts.forEach((q, i) => {
+        if (i) L += Math.hypot(q.x - pts[i - 1].x, q.y - pts[i - 1].y);
+        x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y);
+      });
+      const D = Math.hypot(x1 - x0, y1 - y0);
+      if (D < 14 || D > 460 || L / D < 3) return false;
+      const axis = x1 - x0 >= y1 - y0 ? 'x' : 'y';
+      let rev = 0, dir = 0, acc = 0;
+      for (let i = 1; i < pts.length; i++) {
+        acc += pts[i][axis] - pts[i - 1][axis];
+        if (Math.abs(acc) < 5) continue;
+        const sg = Math.sign(acc);
+        if (dir && sg !== dir) rev++;
+        dir = sg; acc = 0;
+      }
+      return rev >= 4;
+    }
+    function scratchTargets(o) {
+      const dead = deadIds();
+      const sp = o.pts;
+      let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+      sp.forEach(q => { bx0 = Math.min(bx0, q.x); by0 = Math.min(by0, q.y); bx1 = Math.max(bx1, q.x); by1 = Math.max(by1, q.y); });
+      const targets = [];
+      for (const x of ops) {
+        if (!x.id || dead.has(x.id) || !['pen', 'marker', 'highlight', 'pixel'].includes(x.tool)) continue;
+        const r = (x.size + o.size) / 2 + 6, xp = ptsOf(x);
+        const hit = xp.some((q, i) => (i % 2 === 0 || i === xp.length - 1) && q.x > bx0 - r && q.x < bx1 + r && q.y > by0 - r && q.y < by1 + r &&
+          sp.some(t => Math.abs(t.x - q.x) < r && Math.abs(t.y - q.y) < r && Math.hypot(t.x - q.x, t.y - q.y) < r));
+        if (hit) targets.push(x.id);
+      }
+      // anything already on the paper from earlier sessions?
+      let pixel = false;
+      sides.forEach((sd, i) => {
+        if (pixel) return;
+        const lx0 = Math.max(0, Math.floor((bx0 - i * W) * DPR)), lx1 = Math.min(sd.ink.width, Math.ceil((bx1 - i * W) * DPR));
+        const ly0 = Math.max(0, Math.floor(by0 * DPR)), ly1 = Math.min(sd.ink.height, Math.ceil(by1 * DPR));
+        if (lx1 <= lx0 || ly1 <= ly0) return;
+        const data = sd.ctx.getImageData(lx0, ly0, lx1 - lx0, ly1 - ly0).data, w = lx1 - lx0;
+        for (let k = 0; k < sp.length && !pixel; k += 2) {
+          const px = Math.round((sp[k].x - i * W) * DPR) - lx0, py = Math.round(sp[k].y * DPR) - ly0;
+          for (let dy = -3; dy <= 3 && !pixel; dy += 3) for (let dx = -3; dx <= 3; dx += 3) {
+            const X = px + dx, Y = py + dy;
+            if (X >= 0 && Y >= 0 && X < w && Y < ly1 - ly0 && data[(Y * w + X) * 4 + 3] > 40) { pixel = true; break; }
+          }
+        }
+      });
+      return { targets, pixel };
     }
 
     const saveInk = QD.debounce(() => {
@@ -648,7 +856,7 @@
       if (e.pointerType === 'pen' && (e.buttons & 32)) t = 'eraser'; // stylus eraser button
       capture(e.pointerId);
       const p = pt(e), T = TOOL[t];
-      op = { pid: e.pointerId, tool: t, size: sizeOf(t), alpha: T.alpha || 1, color: t === 'eraser' ? '#000' : inkColor(t, p.x), pressure: e.pointerType === 'pen' };
+      op = { pid: e.pointerId, t0: performance.now(), touch: e.pointerType === 'touch', tool: t, size: sizeOf(t), alpha: T.alpha || 1, color: t === 'eraser' ? '#000' : inkColor(t, p.x), pressure: e.pointerType === 'pen' };
       if (t === 'pixel') {
         op.cells = []; op.seen = new Set(); op.last = cellOf(p, op.size);
         addCellsTo(op, op.last, op.last);
@@ -679,8 +887,25 @@
         else strokeSegs(lctx, op, n0);
       }
     }
+    let opSeq = 0;
     function endStroke() {
       const o = op; op = null;
+      if (S.settings.scratchErase !== false && (o.tool === 'pen' || o.tool === 'marker') && isScratch(o)) {
+        const { targets, pixel } = scratchTargets(o);
+        if (targets.length || pixel) {
+          clearCtx(lctx);
+          liveC.style.opacity = 1;
+          const del = { id: ++opSeq, tool: 'delete', targets, pts: o.pts, size: Math.max(16, o.size * 2.5 + 12), pressure: false, color: '#000' };
+          ops.push(del);
+          redo = [];
+          redrawInk();
+          inkChanged(del);
+          QD.sfx('del');
+          return;
+        }
+      }
+      o.id = ++opSeq;
+      delete o.t0;
       if (o.tool === 'eraser') sides.forEach(s => { strokeEnd(s.ctx, o); s.ctx.restore(); });
       else if (o.tool === 'pixel') { delete o.seen; delete o.last; commitLive(o.alpha); }
       else { strokeEnd(lctx, o); commitLive(o.alpha); }
@@ -693,7 +918,7 @@
 
     // one capture-phase handler decides: draw, or let the page/items/scrolling have the pointer
     listen(spread, 'pointerdown', e => {
-      if (flipping || op || e.target.closest('.corner')) return;
+      if (flipping || op || pinch || e.target.closest('.corner')) return;
       if (e.pointerType === 'pen') markPen();
       if (e.target.closest('.i-bar, .h-rot, .h-size')) return;
       const pencilDraws = tool === 'type' && e.pointerType === 'pen' && S.settings.pencil !== 'scribble';
@@ -742,7 +967,6 @@
       const o = redo.pop(); ops.push(o);
       redrawInk(); inkChanged(o); QD.sfx('click');
     }
-    let undoBtn, redoBtn;
     function updateUndo() {
       if (undoBtn) undoBtn.disabled = !ops.length;
       if (redoBtn) redoBtn.disabled = !redo.length;
@@ -818,7 +1042,7 @@
       capture(e.pointerId);
       el.classList.add('dragging');
       const move = ev => {
-        if (ev.pointerId !== e.pointerId) return;
+        if (ev.pointerId !== e.pointerId || pinch) return;
         const p = pt(ev), dx = p.x - start.x, dy = p.y - start.y;
         if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return;
         moved = true;
@@ -993,117 +1217,104 @@
       QD.popover(anchor, h('div', {}, h('p', { class: 'pop-title', text: 'Washi tape' }), grid), { cls: 'pop-tape' });
     }
 
-    /* ===== toolbar ===== */
-    function renderToolbar() {
-      toolbar.innerHTML = '';
-      const modes = h('div', { class: 'tg' });
-      for (const t of TOOLS) {
-        modes.append(h('button', {
-          class: 'tool' + (t.id === tool ? ' active' : ''), 'data-tool': t.id, 'aria-pressed': String(t.id === tool),
-          title: `${t.label} (${t.key.toUpperCase()})`, 'aria-label': t.label, html: ic(t.icon), onclick: () => setTool(t.id),
-        }));
-      }
-      const ins = (icon, label, fn) => h('button', { class: 'tool', title: label, 'aria-label': label, html: ic(icon), onclick: e => fn(e.currentTarget) });
-      const insert = h('div', { class: 'tg' },
-        ins('note', 'Sticky note', () => {
-          const el = addItem({ type: 'note', w: 190, h: 160, color: QD.pick(QD.NOTE_COLORS), text: '', r: Math.round(QD.rand(-4, 4)) });
-          setTimeout(() => el.querySelector('.note-text').focus(), 50);
-        }),
-        ins('photo', 'Add photos', () => fileIn.click()),
-        ins('mic', 'Record voice note', recordVoice),
-        ins('sticker', 'Stickers', stickerPicker),
-        ins('tape', 'Washi tape', tapePicker));
-      undoBtn = h('button', { class: 'tool', title: 'Undo drawing (Ctrl+Z)', 'aria-label': 'Undo drawing', html: ic('undo'), onclick: undo });
-      redoBtn = h('button', { class: 'tool', title: 'Redo drawing (Ctrl+Y)', 'aria-label': 'Redo drawing', html: ic('redo'), onclick: redoOp });
-      toolbar.append(modes, h('span', { class: 'tsep' }), insert, h('span', { class: 'tsep' }), h('div', { class: 'tg' }, undoBtn, redoBtn));
-      updateUndo();
+    /* ===== floating tool palette ===== */
+    let paletteHidden = false, textFocused = false;
+    function addNote() {
+      const el = addItem({ type: 'note', w: 190, h: 160, color: QD.pick(QD.NOTE_COLORS), text: '', r: Math.round(QD.rand(-4, 4)) });
+      setTimeout(() => el.querySelector('.note-text').focus(), 50);
     }
     function setTool(id, quiet) {
       tool = id;
-      prefs.tool = id; savePrefs();
+      prefs.tool = id;
+      if (id !== 'type') prefs.lastDraw = id;
+      savePrefs();
+      paletteHidden = false;
       book.dataset.tool = id;
       book.classList.toggle('drawing', id !== 'type');
-      QD.$$('.tool[data-tool]', toolbar).forEach(b => { const on = b.dataset.tool === id; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
-      if (id !== 'type') { deselect(); if (document.activeElement && spread.contains(document.activeElement)) document.activeElement.blur(); }
+      QD.$$('.jb.tool', bar).forEach(b => { const on = b.dataset.tool === id; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
+      if (id !== 'type') { deselect(); if (document.activeElement && spread.contains(document.activeElement)) document.activeElement.blur(); textFocused = false; }
       cursor.style.display = 'none';
       cursor.className = 'brush-cursor bc-' + id;
-      renderSub();
+      renderPalette();
+      renderDock();
       if (!quiet) QD.sfx('click');
     }
 
-    function renderSub() {
-      sub.innerHTML = '';
+    function renderPalette() {
+      palette.innerHTML = '';
+      const nope = e => e.preventDefault();
+      const pb = (label, title, fn, cls = '') => {
+        const b = h('button', { class: 'pb ' + cls, title, 'aria-label': title, html: label });
+        b.addEventListener('mousedown', nope);
+        b.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse') e.preventDefault(); });
+        b.addEventListener('click', e => fn(e.currentTarget));
+        return b;
+      };
+      const sep = () => h('span', { class: 'pal-sep' });
+      let show;
       if (tool === 'type') {
-        const fb = (label, title, fn, cls = '') => {
-          const b = h('button', { class: 'fbtn ' + cls, title, 'aria-label': title, html: label });
-          b.addEventListener('mousedown', e => e.preventDefault());
-          b.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse') e.preventDefault(); });
-          b.addEventListener('click', e => fn(e.currentTarget));
-          return b;
-        };
+        show = textFocused;
         const colorPop = (anchor, colors, cmd) => {
           const g = h('div', { class: 'swatches' }, colors.map(c => {
             const b = h('button', { class: 'sw', style: { '--sw': c }, title: c, 'aria-label': 'Color ' + c });
-            b.addEventListener('mousedown', e => e.preventDefault());
+            b.addEventListener('mousedown', nope);
+            b.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse') e.preventDefault(); });
             b.addEventListener('click', () => { QD.closePopover(); fmt(cmd, c); });
             return b;
           }));
-          QD.popover(anchor, g, { cls: 'pop-sw' });
+          QD.popover(anchor, g, { cls: 'pop-sw', align: 'center' });
         };
-        sub.append(h('div', { class: 'sub-group' },
-          fb('<b>B</b>', 'Bold (Ctrl+B)', () => fmt('bold')),
-          fb('<i>I</i>', 'Italic (Ctrl+I)', () => fmt('italic')),
-          fb('<u>U</u>', 'Underline (Ctrl+U)', () => fmt('underline')),
-          fb('<s>S</s>', 'Strikethrough', () => fmt('strikeThrough'))),
-        h('div', { class: 'sub-group' },
-          fb(ic('textcolor'), 'Text color', a => colorPop(a, TEXT_COLORS, 'foreColor'), 'fc'),
-          fb(ic('highlighter'), 'Highlight text', a => colorPop(a, MARK_COLORS, 'hiliteColor'))),
-        h('div', { class: 'sub-group' },
-          fb(ic('list'), 'Bullet list', () => fmt('insertUnorderedList')),
-          fb(ic('checkbox'), 'Checkbox', () => { ensureBodySelection(); document.execCommand('insertHTML', false, '<span class="chk" contenteditable="false"></span>&nbsp;'); syncBody(); changed(); }),
-          fb(ic('clock'), 'Insert time', () => { ensureBodySelection(); document.execCommand('insertHTML', false, `<span class="tstamp" contenteditable="false">${QD.esc(QD.fmtTime(Date.now()))}</span>&nbsp;`); syncBody(); changed(); }),
-          fb(ic('eraser'), 'Clear formatting', () => fmt('removeFormat'))),
-        h('span', { class: 'sub-hint hide-sm', text: penSeen && S.settings.pencil !== 'scribble' ? 'Pencil writes anytime · drag a page corner to turn the day' : 'Drag a page corner to turn the day · drop photos anywhere' }));
-        return;
-      }
-      const t = TOOL[tool];
-      if (tool !== 'eraser') {
-        const list = tool === 'highlight' ? HL_SWATCHES : PEN_SWATCHES;
-        const cur = prefs.colors[tool] || list[0];
-        const g = h('div', { class: 'sub-group swatches' });
-        for (const c of list) {
-          const real = c === 'ink' ? inkColor('__ink', single ? side * W : 0) : c;
-          g.append(h('button', {
-            class: 'sw' + (c === cur ? ' active' : '') + (c === 'ink' ? ' sw-ink' : ''), style: { '--sw': real },
-            title: c === 'ink' ? 'Page ink' : c, 'aria-label': c === 'ink' ? 'Page ink color' : 'Color ' + c,
-            onclick: () => { prefs.colors[tool] = c; savePrefs(); renderSub(); },
-          }));
+        palette.append(
+          pb('<b>B</b>', 'Bold (Ctrl+B)', () => fmt('bold')),
+          pb('<i>I</i>', 'Italic (Ctrl+I)', () => fmt('italic')),
+          pb('<u>U</u>', 'Underline (Ctrl+U)', () => fmt('underline')),
+          pb('<s>S</s>', 'Strikethrough', () => fmt('strikeThrough')), sep(),
+          pb(ic('textcolor'), 'Text color', a => colorPop(a, TEXT_COLORS, 'foreColor'), 'fc'),
+          pb(ic('highlighter'), 'Highlight text', a => colorPop(a, MARK_COLORS, 'hiliteColor')), sep(),
+          pb(ic('list'), 'Bullet list', () => fmt('insertUnorderedList')),
+          pb(ic('checkbox'), 'Checkbox', () => { ensureBodySelection(); document.execCommand('insertHTML', false, '<span class="chk" contenteditable="false"></span>&nbsp;'); syncBody(); changed(); }),
+          pb(ic('clock'), 'Insert time', () => { ensureBodySelection(); document.execCommand('insertHTML', false, `<span class="tstamp" contenteditable="false">${QD.esc(QD.fmtTime(Date.now()))}</span>&nbsp;`); syncBody(); changed(); }),
+          pb(ic('eraser'), 'Clear formatting', () => fmt('removeFormat')));
+      } else {
+        show = !paletteHidden;
+        const t = TOOL[tool];
+        if (tool !== 'eraser') {
+          const list = tool === 'highlight' ? HL_SWATCHES : PEN_SWATCHES;
+          const cur = prefs.colors[tool] || list[0];
+          for (const c of list) {
+            const real = c === 'ink' ? inkColor('__ink', single ? side * W : 0) : c;
+            palette.append(h('button', {
+              class: 'sw' + (c === cur ? ' active' : '') + (c === 'ink' ? ' sw-ink' : ''), style: { '--sw': real },
+              title: c === 'ink' ? 'Page ink' : c, 'aria-label': c === 'ink' ? 'Page ink color' : 'Color ' + c,
+              onclick: () => { prefs.colors[tool] = c; savePrefs(); renderPalette(); updateToolColors(); },
+            }));
+          }
+          const custom = h('input', { type: 'color', class: 'sw-custom', title: 'Custom color', 'aria-label': 'Custom color', value: /^#/.test(cur) ? cur : '#ff6f9c' });
+          custom.addEventListener('input', () => { prefs.colors[tool] = custom.value; savePrefs(); updateToolColors(); });
+          custom.addEventListener('change', () => renderPalette());
+          palette.append(h('label', { class: 'sw sw-rainbow' + (!list.includes(cur) ? ' active' : ''), title: 'Custom color', style: !list.includes(cur) ? { '--sw': cur } : null }, custom), sep());
         }
-        const custom = h('input', { type: 'color', class: 'sw-custom', title: 'Custom color', 'aria-label': 'Custom color', value: /^#/.test(cur) ? cur : '#ff6f9c' });
-        custom.addEventListener('input', () => { prefs.colors[tool] = custom.value; savePrefs(); });
-        custom.addEventListener('change', () => renderSub());
-        g.append(h('label', { class: 'sw sw-rainbow' + (!list.includes(cur) ? ' active' : ''), title: 'Custom color', style: !list.includes(cur) ? { '--sw': cur } : null }, custom));
-        sub.append(g);
-      }
-      const val = sizeOf(tool);
-      const prev = h('span', { class: 'size-prev' + (tool === 'pixel' ? ' sq' : '') });
-      const setPrev = v => { const d = Math.min(30, Math.max(3, v * (tool === 'pixel' ? 0.8 : 0.7))); prev.style.width = prev.style.height = d + 'px'; };
-      setPrev(val);
-      const range = h('input', { type: 'range', min: t.min, max: t.max, step: t.step || 1, value: val, 'aria-label': 'Size' });
-      const out = h('span', { class: 'size-val', text: val + 'px' });
-      range.addEventListener('input', () => { prefs.sizes[tool] = +range.value; out.textContent = range.value + 'px'; setPrev(+range.value); savePrefs(); });
-      sub.append(h('label', { class: 'sub-group size' }, h('span', { class: 'sub-label', text: 'Size' }), range, prev, out));
-      if (tool === 'eraser') {
-        sub.append(h('button', {
-          class: 'btn sm ghost danger-text', html: ic('trash') + `<span>Clear ${single ? 'this page' : 'both pages'}</span>`,
-          onclick: async () => {
+        const cur = sizeOf(tool), presets = SIZE_PRESETS[tool];
+        presets.forEach((v, i) => {
+          const dot = 5 + i * 6;
+          palette.append(pb(`<i style="width:${dot}px;height:${dot}px"></i>`, `Size ${v}px`, () => { prefs.sizes[tool] = v; savePrefs(); renderPalette(); }, 'sz' + (tool === 'pixel' ? ' sq' : '') + (v === cur ? ' active' : '')));
+        });
+        const fine = pb(presets.includes(cur) ? ic('dots') : `<small>${cur}</small>`, 'Exact size', a => {
+          const out = h('span', { class: 'size-val', text: sizeOf(tool) + 'px' });
+          const range = h('input', { type: 'range', min: t.min, max: t.max, step: t.step || 1, value: sizeOf(tool), 'aria-label': 'Size' });
+          range.addEventListener('input', () => { prefs.sizes[tool] = +range.value; out.textContent = range.value + 'px'; savePrefs(); });
+          QD.popover(a, h('label', { class: 'size-pop' }, range, out), { cls: 'pop-size', align: 'center', onClose: () => renderPalette() });
+        }, 'sz-more' + (presets.includes(cur) ? '' : ' active'));
+        palette.append(fine);
+        if (tool === 'eraser') {
+          palette.append(sep(), pb(ic('trash') + `<span>Clear ${single ? 'page' : 'both pages'}</span>`, 'Clear drawing', async () => {
             if (!(await QD.confirm({ title: 'Clear drawing?', text: 'Removes pen, marker and pixel strokes. You can undo this.', ok: 'Clear', danger: true }))) return;
             const o = { tool: 'clear', sides: single ? [side] : [0, 1] };
             ops.push(o); redo = []; redrawInk(); inkChanged(o);
-          },
-        }));
+          }, 'pb-text danger-text'));
+        }
       }
-      sub.append(h('span', { class: 'sub-hint hide-sm', text: tool === 'pixel' ? 'Paints chunky 8-bit pixels' : 'Press T to go back to typing' }));
+      palette.classList.toggle('show', !!show && !prefs.focus);
     }
 
     /* ===== page turning ===== */
@@ -1246,25 +1457,13 @@
     }
     Object.values(corners).forEach(c => listen(c, 'pointerdown', onCornerDown));
 
-    /* ===== status bar ===== */
-    function updateStatusBar() {
-      if (destroyed) return;
-      const t = page.text || '';
-      const words = QD.countWords(t), chars = QD.countChars(t);
-      const nPhoto = page.items.filter(i => i.type === 'photo').length, nVoice = page.items.filter(i => i.type === 'voice').length;
-      statusLeft.innerHTML = '';
-      statusLeft.append(...[
-        h('span', { text: `${words} ${words === 1 ? 'word' : 'words'} · ${chars} characters` }),
-        nPhoto ? h('span', { html: `${ic('photo')} ${nPhoto}` }) : null,
-        nVoice ? h('span', { html: `${ic('mic')} ${nVoice}` }) : null,
-        h('span', { class: 'hide-sm', text: page.draft ? 'Blank day — start writing to keep it' : `Edited ${QD.timeAgo(page.updatedAt)}` }),
-      ].filter(Boolean));
-    }
-
     function showShortcuts() {
       const rows = [
         ['Drag a corner', 'Turn to the next day (right corners) or back (left corners). A quick tap works too.'],
         ['Apple Pencil', 'Writes in any tool. Fingers scroll, type and move things.'],
+        ['Pinch', 'Zoom in and out with two fingers (or a trackpad / Ctrl + scroll)'],
+        ['2-finger tap', 'Undo drawing'], ['3-finger tap', 'Redo drawing'],
+        ['\\', 'Hide / show the toolbar'], ['Ctrl+ = / - / 0', 'Zoom in / out / fit'],
         ['T', 'Type & arrange'], ['P / M / H', 'Pen / marker / highlighter'], ['X', 'Pixel brush'], ['E', 'Eraser'],
         ['[ and ]', 'Brush size'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo drawing'], ['Delete', 'Remove selected item'],
         ['Shift + rotate', 'Snap rotation to 15°'], ['Alt+← / Alt+→', 'Turn back / forward'], ['Ctrl+S', 'Save now'], ['Esc', 'Deselect / back to typing'],
@@ -1283,8 +1482,11 @@
         flipTo(e.key === 'ArrowLeft' ? 'prev' : 'next');
         return;
       }
+      if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); exportPdf(); return; }
       if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); S.flush(page.id); QD.toast(page.draft ? 'Nothing to save yet' : 'Saved', { icon: 'check' }); return; }
+      if (mod && (e.key === '=' || e.key === '+' || e.key === '-' || e.key === '0')) { e.preventDefault(); if (e.key === '0') zoomTo(1); else setZoom(e.key === '-' ? -1 : 1); return; }
       if (editing) { if (e.key === 'Escape') a.blur(); return; }
+      if (e.key === '\\') { e.preventDefault(); setFocus(!prefs.focus); return; }
       if (e.key === 'PageDown' || e.key === 'PageUp') { e.preventDefault(); flipTo(e.key === 'PageDown' ? 'next' : 'prev'); return; }
       if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redoOp() : undo(); return; }
       if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redoOp(); return; }
@@ -1296,20 +1498,18 @@
       if ((e.key === '[' || e.key === ']') && tool !== 'type') {
         const tt = TOOL[tool], st = tt.step || 1;
         prefs.sizes[tool] = QD.clamp(sizeOf(tool) + (e.key === ']' ? st : -st) * (tt.step ? 1 : 2), tt.min, tt.max);
-        savePrefs(); renderSub();
+        savePrefs(); renderPalette();
       }
     }
     listen(document, 'keydown', onKey);
 
     /* ===== boot ===== */
-    renderTop();
+    renderBar();
     renderHeader();
-    renderToolbar();
     setTool(tool, true);
     renderItems();
     applyHeight();
     sizeCanvases();
-    updateStatusBar();
     page.inks.forEach((id, i) => {
       const rec = id && S.media.get(id);
       if (rec) createImageBitmap(rec.blob).then(img => { if (!destroyed) { baseImgs[i] = img; redrawInk(); } }).catch(() => {});

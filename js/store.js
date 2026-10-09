@@ -48,7 +48,7 @@
     paper: 'lined', defaultCategory: 'personal',
     weekStart: 0, dateFormat: 'us', timeFormat: '12',
     sounds: true, openTo: 'today', lastPage: null,
-    layout: 'auto', pencil: 'draw', fingerDraw: 'auto', pencilTool: 'pen',
+    layout: 'auto', pencil: 'draw', fingerDraw: 'auto', pencilTool: 'pen', scratchErase: true,
   };
   const DEFAULT_CATS = [
     { id: 'personal', name: 'Personal', color: '#ff6f9c' },
