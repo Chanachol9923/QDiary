@@ -38,6 +38,15 @@
   let lastShown = null;
   let pending = null; // set right before navigating after a page turn: { side, noAnim }
 
+  // run fn at most once per animation frame with the latest argument
+  function rafThrottle(fn) {
+    let arg = null, id = 0;
+    const run = () => { id = 0; const a = arg; arg = null; fn(a); };
+    const t = a => { arg = a; if (!id) id = requestAnimationFrame(run); };
+    t.flush = () => { if (id) { cancelAnimationFrame(id); run(); } };
+    t.cancel = () => { if (id) cancelAnimationFrame(id); id = 0; arg = null; };
+    return t;
+  }
   const paperOf = (p, i) => (p.papers && p.papers[i]) || p.paper || 'lined';
   const textOf = el => el.innerText.replace(/ /g, ' ').trim();
 
@@ -296,6 +305,7 @@
       ], { align: 'end' });
     }
     function exportPdf() {
+      syncSoon.now();
       saveInk.now();
       if (!page.draft) S.flush(page.id);
       QD.pdfDialog({ date: page.date, live: { pageId: page.id, inks: sides.map(sd => sd.ink) } });
@@ -432,12 +442,15 @@
 
     /* ===== text on both pages ===== */
     let countTimer = 0;
+    const markEmpty = b => b.classList.toggle('is-empty', !b.textContent.trim() && !b.querySelector('.chk'));
     function syncBody() {
       page.html = sides[0].body.innerHTML;
       page.html2 = sides[1].body.innerHTML;
       page.text = [textOf(sides[0].body), textOf(sides[1].body)].filter(Boolean).join('\n');
-      sides.forEach(s => s.body.classList.toggle('is-empty', !textOf(s.body) && !s.body.querySelector('.chk')));
+      sides.forEach(x => markEmpty(x.body));
     }
+    // typing stays light: serialising + measuring happens once the fingers pause
+    const syncSoon = QD.debounce(() => { if (!destroyed) { syncBody(); autoGrow(); } }, 220);
     sides.forEach(s => s.body.classList.toggle('is-empty', !s.body.textContent.trim() && !s.body.querySelector('.chk')));
     sides.forEach(s => {
       listen(s.body, 'focus', () => { lastBody = s.body; textFocused = true; renderPalette(); });
@@ -446,7 +459,7 @@
         textFocused = sides.some(x => x.body === document.activeElement);
         if (!textFocused && !document.querySelector('.pop-sw')) renderPalette();
       }, 120));
-      listen(s.body, 'input', () => { syncBody(); autoGrow(); changed(); });
+      listen(s.body, 'input', () => { markEmpty(s.body); syncSoon(); changed(); });
       listen(s.body, 'paste', e => {
         const cd = e.clipboardData;
         if (!cd) return;
@@ -517,6 +530,7 @@
       root.style.setProperty('--nb-scale', scale);
       placeCorners();
       updateZoomUI();
+      rectCache = null;
       if (was !== single) { deselect(); commitSel(); }
     }
     function placeCorners() {
@@ -546,8 +560,14 @@
     offs.push(() => ro.disconnect());
 
     const capture = id => { try { spread.setPointerCapture(id); } catch (err) { /* pointer already gone */ } };
+    // reading layout on every pencil event is expensive — cache it until something moves the page
+    let rectCache = null;
+    const dropRect = () => { rectCache = null; };
+    listen(scroller, 'scroll', dropRect, { passive: true });
+    listen(window, 'resize', dropRect);
+    listen(book, 'animationend', dropRect);
     function pt(e) {
-      const r = spread.getBoundingClientRect();
+      const r = rectCache || (rectCache = spread.getBoundingClientRect());
       return { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale, p: e.pressure || 0.5 };
     }
     const sideAt = x => (single ? side : x < W ? 0 : 1);
@@ -601,6 +621,7 @@
     }
     function cancelStroke() {
       if (!op) return;
+      palette.classList.remove('ghost'); zoomCtl.classList.remove('ghost');
       if (op.tool === 'eraser') sides.forEach(s => s.ctx.restore());
       op = null;
       clearCtx(lctx);
@@ -611,9 +632,9 @@
     const tmid = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
     let taps = null; // multi-finger tap detection: 2 fingers = undo, 3 = redo
     let pinchRaf = 0;
-    function pinchFrame() {
+    function pinchFrame(q) {
       pinchRaf = 0;
-      const p = pinch;
+      const p = q || pinch;
       if (!p) return;
       const z = QD.clamp(p.z0 * p.d / p.d0, 0.45, 4.5), k = z / p.z0;
       const tx = p.m.x - p.wr.left - k * (p.m0.x - p.wr.left), ty = p.m.y - p.wr.top - k * (p.m0.y - p.wr.top);
@@ -642,7 +663,7 @@
       if (ts.length >= 2) {
         e.preventDefault();
         if (op && op.touch) cancelStroke();
-        if (lasso) { lasso = null; clearCtx(lctx); }
+        if (lasso) { lasso = null; lassoSvg.classList.remove('on'); lassoPath.setAttribute('d', ''); }
         taps = taps && performance.now() - taps.t0 < 250 ? { ...taps, n: Math.max(taps.n, ts.length) } : { t0: performance.now(), n: ts.length, moved: false };
         if (ts.length === 2 && !pinch) {
           const m = tmid(ts[0], ts[1]), br = book.getBoundingClientRect(), d = tdist(ts[0], ts[1]);
@@ -670,14 +691,20 @@
     };
     listen(scroller, 'touchend', touchEnd);
     listen(scroller, 'touchcancel', touchEnd);
-    let wheelSave = 0, wheelRaf = 0, wheelZ = null;
+    // trackpad pinch / Ctrl+wheel: same GPU path as fingers, settle when the wheel goes quiet
+    let wheelP = null, wheelEnd = 0, wheelRaf = 0;
     listen(scroller, 'wheel', e => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      wheelZ = { z: (wheelZ ? wheelZ.z : prefs.zoom || 1) * Math.exp(-e.deltaY * 0.01), x: e.clientX, y: e.clientY };
-      if (!wheelRaf) wheelRaf = requestAnimationFrame(() => { wheelRaf = 0; const w = wheelZ; wheelZ = null; if (w) zoomAt(w.z, w.x, w.y); });
-      clearTimeout(wheelSave);
-      wheelSave = setTimeout(savePrefs, 300);
+      if (!wheelP) {
+        const br = book.getBoundingClientRect(), m = { x: e.clientX, y: e.clientY };
+        wheelP = { d0: 1, d: 1, z0: prefs.zoom || 1, z: prefs.zoom || 1, m0: m, m, wr: wrap.getBoundingClientRect(), bp: { x: (m.x - br.left) / scale, y: (m.y - br.top) / scale } };
+        wrap.classList.add('pinching'); book.classList.add('pinching');
+      }
+      wheelP.d = QD.clamp(wheelP.d * Math.exp(-e.deltaY * 0.01), 0.45 / wheelP.z0, 4.5 / wheelP.z0);
+      if (!wheelRaf) wheelRaf = requestAnimationFrame(() => { wheelRaf = 0; if (wheelP) pinchFrame(wheelP); });
+      clearTimeout(wheelEnd);
+      wheelEnd = setTimeout(() => { const q = wheelP; wheelP = null; if (!q) return; cancelAnimationFrame(wheelRaf); wheelRaf = 0; pinchFrame(q); endPinch(q); }, 150);
     }, { passive: false });
     // Safari: never zoom the whole app with a pinch
     listen(document, 'gesturestart', e => e.preventDefault());
@@ -695,6 +722,7 @@
       lctx.setTransform(DPR, 0, 0, DPR, -liveX * DPR, 0);
     }
     function sizeCanvases() {
+      cp = null;
       setupLive(true);
       sides.forEach((s, i) => {
         s.ink.width = W * DPR; s.ink.height = page.height * DPR;
@@ -704,13 +732,25 @@
       redrawInk();
     }
     function clearCtx(c) { c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, c.canvas.width, c.canvas.height); c.restore(); }
+    // Redraw = base image + every op. A rolling checkpoint keeps undo fast on busy pages.
+    let cp = null;
+    function maybeCheckpoint(force) {
+      if (sel || (!force && ops.length - (cp ? cp.n : 0) < 24) || !ops.length) return;
+      cp = cp || { cv: [document.createElement('canvas'), document.createElement('canvas')] };
+      cp.n = ops.length; cp.last = ops[ops.length - 1]; cp.ids = new Set(ops.map(o => o.id));
+      sides.forEach((sd, i) => { const c = cp.cv[i]; c.width = sd.ink.width; c.height = sd.ink.height; c.getContext('2d').drawImage(sd.ink, 0, 0); });
+    }
     function redrawInk() {
+      const dead = deadIds();
+      const useCp = cp && cp.n <= ops.length && ops[cp.n - 1] === cp.last && cp.cv[0].height === sides[0].ink.height && ![...dead].some(id => cp.ids.has(id));
       sides.forEach((s, i) => {
         clearCtx(s.ctx);
-        if (baseImgs[i]) { s.ctx.save(); s.ctx.setTransform(1, 0, 0, 1, 0, 0); s.ctx.drawImage(baseImgs[i], 0, 0); s.ctx.restore(); }
+        const img = useCp ? cp.cv[i] : baseImgs[i];
+        if (img) { s.ctx.save(); s.ctx.setTransform(1, 0, 0, 1, 0, 0); s.ctx.drawImage(img, 0, 0); s.ctx.restore(); }
       });
-      const dead = deadIds();
-      for (const o of ops) if (!dead.has(o.id)) replay(o);
+      for (let k = useCp ? cp.n : 0; k < ops.length; k++) if (!dead.has(ops[k].id)) replay(ops[k]);
+      if (!useCp) cp = null;
+      maybeCheckpoint();
     }
     // strokes removed by a scratch-out gesture
     function deadIds() {
@@ -744,24 +784,60 @@
       c.fillStyle = o.color;
       for (let i = from; i < o.cells.length; i++) c.fillRect(o.cells[i][0] * o.size, o.cells[i][1] * o.size, o.size, o.size);
     }
+    function opBox(o) {
+      if (o.bb) return o.bb;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      if (o.tool === 'pixel') o.cells.forEach(c => { x0 = Math.min(x0, c[0] * o.size); y0 = Math.min(y0, c[1] * o.size); x1 = Math.max(x1, (c[0] + 1) * o.size); y1 = Math.max(y1, (c[1] + 1) * o.size); });
+      else o.pts.forEach(q => { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); });
+      const pad = (o.pressure ? o.size * 1.7 : o.size) / 2 + 3;
+      return (o.bb = { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad });
+    }
+    const touchesSide = (bb, i) => bb.x1 > i * W && bb.x0 < (i + 1) * W;
+    // copy just the stroke's box from a scratch canvas onto the pages (srcX = spread x of the scratch canvas)
+    function commitRegion(src, srcX, alpha, bb) {
+      const sx0 = QD.clamp(Math.floor((bb.x0 - srcX) * DPR), 0, src.width), sx1 = QD.clamp(Math.ceil((bb.x1 - srcX) * DPR), 0, src.width);
+      const sy0 = QD.clamp(Math.floor(bb.y0 * DPR), 0, src.height), sy1 = QD.clamp(Math.ceil(bb.y1 * DPR), 0, src.height);
+      const w = sx1 - sx0, hh = sy1 - sy0;
+      if (w <= 0 || hh <= 0) return;
+      sides.forEach((sd, i) => {
+        const dx = sx0 + (srcX - i * W) * DPR;
+        if (dx + w <= 0 || dx >= sd.ink.width) return;
+        sd.ctx.save(); sd.ctx.setTransform(1, 0, 0, 1, 0, 0); sd.ctx.globalAlpha = alpha;
+        sd.ctx.drawImage(src, sx0, sy0, w, hh, dx, sy0, w, hh);
+        sd.ctx.restore();
+      });
+      const c = src.getContext('2d');
+      c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(sx0, sy0, w, hh); c.restore();
+    }
+    let rc = null, rctx = null;
+    function replayCtx() {
+      if (!rc || rc.height !== page.height * DPR) {
+        rc = rc || document.createElement('canvas');
+        rc.width = 2 * W * DPR; rc.height = page.height * DPR;
+        rctx = rc.getContext('2d');
+        rctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      }
+      return rctx;
+    }
     function replay(o) {
       if (o.tool === 'move') { if (o.ink) applyMove(o); return; }
       if (o.tool === 'clear') { (o.sides || [0, 1]).forEach(i => clearCtx(sides[i].ctx)); return; }
+      const bb = opBox(o);
       if (o.tool === 'eraser' || o.tool === 'delete') {
-        sides.forEach(s => { s.ctx.save(); s.ctx.globalCompositeOperation = 'destination-out'; strokeSegs(s.ctx, o, 0); strokeEnd(s.ctx, o); s.ctx.restore(); });
+        sides.forEach((sd, i) => { if (!touchesSide(bb, i)) return; sd.ctx.save(); sd.ctx.globalCompositeOperation = 'destination-out'; strokeSegs(sd.ctx, o, 0); strokeEnd(sd.ctx, o); sd.ctx.restore(); });
         return;
       }
-      clearCtx(lctx);
-      if (o.tool === 'pixel') pixelCells(lctx, o, 0); else { strokeSegs(lctx, o, 0); strokeEnd(lctx, o); }
-      commitLive(o.alpha);
+      if ((o.alpha || 1) >= 1) { // opaque: draw straight onto the pages
+        sides.forEach((sd, i) => { if (!touchesSide(bb, i)) return; if (o.tool === 'pixel') pixelCells(sd.ctx, o, 0); else { strokeSegs(sd.ctx, o, 0); strokeEnd(sd.ctx, o); } });
+        return;
+      }
+      const c = replayCtx(); // translucent: composite once so overlaps don't darken
+      if (o.tool === 'pixel') pixelCells(c, o, 0); else { strokeSegs(c, o, 0); strokeEnd(c, o); }
+      commitRegion(rc, 0, o.alpha, bb);
     }
-    function commitLive(alpha) {
-      sides.forEach((s, i) => {
-        s.ctx.save(); s.ctx.setTransform(1, 0, 0, 1, 0, 0); s.ctx.globalAlpha = alpha;
-        s.ctx.drawImage(liveC, (liveX - i * W) * DPR, 0);
-        s.ctx.restore();
-      });
-      clearCtx(lctx);
+    function commitLive(alpha, o) {
+      if (o) { commitRegion(liveC, liveX, alpha, opBox(o)); return; }
+      commitRegion(liveC, liveX, alpha, { x0: liveX, y0: 0, x1: liveX + liveC.width / DPR, y1: page.height });
     }
     function inkColor(t, x) {
       const c = prefs.colors[t] || 'ink';
@@ -880,6 +956,7 @@
     function beginStroke(e, t) {
       if (e.pointerType === 'pen' && (e.buttons & 32)) t = 'eraser'; // stylus eraser button
       capture(e.pointerId);
+      palette.classList.add('ghost'); zoomCtl.classList.add('ghost');
       const p = pt(e), T = TOOL[t];
       op = { pid: e.pointerId, t0: performance.now(), touch: e.pointerType === 'touch', tool: t, size: sizeOf(t), alpha: T.alpha || 1, color: t === 'eraser' ? '#000' : inkColor(t, p.x), pressure: e.pointerType === 'pen' };
       if (t === 'pixel') {
@@ -915,10 +992,11 @@
     let opSeq = 0;
     function endStroke() {
       const o = op; op = null;
+      palette.classList.remove('ghost'); zoomCtl.classList.remove('ghost');
       if (S.settings.scratchErase !== false && (o.tool === 'pen' || o.tool === 'marker') && isScratch(o)) {
         const { targets, pixel } = scratchTargets(o);
         if (targets.length || pixel) {
-          clearCtx(lctx);
+          commitRegion(liveC, liveX, 0, opBox(o)); // just clears the live stroke
           liveC.style.opacity = 1;
           const del = { id: ++opSeq, tool: 'delete', targets, pts: o.pts, size: Math.max(16, o.size * 2.5 + 12), pressure: false, color: '#000' };
           ops.push(del);
@@ -934,13 +1012,14 @@
       o.id = ++opSeq;
       delete o.t0;
       if (o.tool === 'eraser') sides.forEach(s => { strokeEnd(s.ctx, o); s.ctx.restore(); });
-      else if (o.tool === 'pixel') { delete o.seen; delete o.last; commitLive(o.alpha); }
-      else { strokeEnd(lctx, o); commitLive(o.alpha); }
+      else if (o.tool === 'pixel') { delete o.seen; delete o.last; commitLive(o.alpha, o); }
+      else { strokeEnd(lctx, o); commitLive(o.alpha, o); }
       liveC.style.opacity = 1;
       delete o.pid;
       ops.push(o);
       redo = [];
       inkChanged(o);
+      maybeCheckpoint();
     }
 
     // one capture-phase handler decides: draw, or let the page/items/scrolling have the pointer
@@ -952,6 +1031,7 @@
       if (tool === 'type' && !pencilDraws) { if (sel && !e.target.closest('.in-lasso')) commitSel(); return; }
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       const fingerOnSel = tool === 'lasso' && sel && inSel(pt(e));
+      if (sel && e.pointerType === 'touch' && !fingerOnSel) selTap = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() };
       if (e.pointerType === 'touch' && !fingerDraws() && !fingerOnSel) return; // finger pans; pencil draws
       e.preventDefault();
       e.stopPropagation();
@@ -966,7 +1046,15 @@
       if (op && e.pointerId === op.pid) { moveStroke(e); moveCursor(e); return; }
       if (tool !== 'type' && (e.pointerType !== 'touch')) moveCursor(e);
     });
-    const finish = e => { if (lassoUp(e)) return; if (op && e.pointerId === op.pid) endStroke(); };
+    let selTap = null;
+    const finish = e => {
+      if (selTap && e.pointerId === selTap.id) {
+        if (e.type === 'pointerup' && Math.hypot(e.clientX - selTap.x, e.clientY - selTap.y) < 10 && performance.now() - selTap.t < 350) commitSel();
+        selTap = null;
+      }
+      if (lassoUp(e)) return;
+      if (op && e.pointerId === op.pid) endStroke();
+    };
     listen(spread, 'pointerup', finish);
     listen(spread, 'pointercancel', finish);
     listen(spread, 'pointerleave', () => { cursor.style.display = 'none'; });
@@ -1005,20 +1093,30 @@
 
     /* ===== lasso: circle ink and items to select, then drag / delete / duplicate ===== */
     let lasso = null, sel = null, tmpA = null, tmpB = null;
-    const tmpCanvas = c => { c = c || document.createElement('canvas'); c.width = 2 * W * DPR; c.height = page.height * DPR; return c; };
-    function polyPath(c, poly, ox = 0) {
+    const sized = (c, w, hh) => { c = c || document.createElement('canvas'); c.width = Math.max(1, w); c.height = Math.max(1, hh); return c; };
+    function polyPath(c, poly, ox = 0, oy = 0) {
       c.beginPath();
-      poly.forEach((q, i) => (i ? c.lineTo((q.x - ox) * DPR, q.y * DPR) : c.moveTo((q.x - ox) * DPR, q.y * DPR)));
+      poly.forEach((q, i) => (i ? c.lineTo((q.x - ox) * DPR, (q.y - oy) * DPR) : c.moveTo((q.x - ox) * DPR, (q.y - oy) * DPR)));
       c.closePath();
     }
-    function cutPiece(poly) {
-      tmpA = tmpCanvas(tmpA);
+    // device-pixel box of a polygon, clamped to the pages that are visible
+    function polyBox(poly) {
+      const lo = single ? side * W : 0, hi = single ? side * W + W : 2 * W;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      poly.forEach(q => { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); });
+      x0 = Math.max(lo, x0); x1 = Math.min(hi, x1); y0 = Math.max(0, y0); y1 = Math.min(page.height, y1);
+      if (x1 - x0 < 2 || y1 - y0 < 2) return null;
+      const X = Math.floor(x0 * DPR), Y = Math.floor(y0 * DPR);
+      return { X, Y, Wd: Math.ceil(x1 * DPR) - X, Hd: Math.ceil(y1 * DPR) - Y };
+    }
+    function cutPiece(poly, r, keep) {
+      tmpA = sized(tmpA, r.Wd, r.Hd);
       const a = tmpA.getContext('2d');
-      sides.forEach((sd, i) => a.drawImage(sd.ink, i * W * DPR, 0));
-      tmpB = tmpCanvas(tmpB);
-      const b = tmpB.getContext('2d');
-      b.save(); polyPath(b, poly); b.clip(); b.drawImage(tmpA, 0, 0); b.restore();
-      return tmpB;
+      sides.forEach((sd, i) => a.drawImage(sd.ink, i * W * DPR - r.X, -r.Y));
+      const piece = keep ? sized(null, r.Wd, r.Hd) : (tmpB = sized(tmpB, r.Wd, r.Hd));
+      const b = piece.getContext('2d');
+      b.save(); polyPath(b, poly, r.X / DPR, r.Y / DPR); b.clip(); b.drawImage(tmpA, 0, 0); b.restore();
+      return piece;
     }
     function erasePoly(poly) {
       sides.forEach((sd, i) => {
@@ -1028,14 +1126,27 @@
         sd.ctx.restore();
       });
     }
-    function pastePiece(piece, dx, dy) {
-      sides.forEach((sd, i) => { sd.ctx.save(); sd.ctx.setTransform(1, 0, 0, 1, 0, 0); sd.ctx.drawImage(piece, (dx - i * W) * DPR, dy * DPR); sd.ctx.restore(); });
+    function pastePiece(piece, r, dx, dy) {
+      sides.forEach((sd, i) => {
+        const X = r.X + Math.round(dx * DPR) - i * W * DPR;
+        if (X + r.Wd <= 0 || X >= sd.ink.width) return;
+        sd.ctx.save(); sd.ctx.setTransform(1, 0, 0, 1, 0, 0); sd.ctx.drawImage(piece, X, r.Y + Math.round(dy * DPR)); sd.ctx.restore();
+      });
     }
     function applyMove(o) {
-      const piece = cutPiece(o.poly);
+      if (!o.r) return;
+      const piece = cutPiece(o.poly, o.r);
       if (!o.copy) erasePoly(o.poly);
-      if (!o.del) pastePiece(piece, o.dx, o.dy);
+      if (!o.del) pastePiece(piece, o.r, o.dx, o.dy);
     }
+    // the loop you draw is a vector path (cheap), not a full-canvas repaint
+    const SVGNS = 'http://www.w3.org/2000/svg';
+    const lassoSvg = document.createElementNS(SVGNS, 'svg');
+    const lassoPath = document.createElementNS(SVGNS, 'path');
+    lassoSvg.setAttribute('class', 'lasso-path');
+    lassoSvg.append(lassoPath);
+    spread.append(lassoSvg);
+    const drawLasso = rafThrottle(() => { if (lasso) lassoPath.setAttribute('d', lasso.d + ' Z'); });
     const inPoly = (q, poly) => {
       let inside = false;
       for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -1045,42 +1156,32 @@
       return inside;
     };
     const inSel = q => sel && q.x > sel.box.x0 + sel.dx - 12 && q.x < sel.box.x1 + sel.dx + 12 && q.y > sel.box.y0 + sel.dy - 12 && q.y < sel.box.y1 + sel.dy + 12;
-    function drawLasso() {
-      clearCtx(lctx);
-      const pts = lasso.pts;
-      lctx.save();
-      lctx.setLineDash([7, 6]);
-      lctx.lineWidth = 2.2 / Math.max(scale, 0.5);
-      lctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#ff6f9c';
-      lctx.fillStyle = 'rgba(120, 110, 255, .07)';
-      lctx.beginPath();
-      pts.forEach((q, i) => (i ? lctx.lineTo(q.x, q.y) : lctx.moveTo(q.x, q.y)));
-      if (pts.length > 2) lctx.closePath();
-      lctx.fill(); lctx.stroke();
-      lctx.restore();
-    }
     function lassoDown(e) {
       capture(e.pointerId);
       const q = pt(e);
       if (sel && inSel(q)) { sel.drag = { pid: e.pointerId, x: q.x, y: q.y, dx0: sel.dx, dy0: sel.dy }; sel.outline.classList.add('dragging'); return; }
       commitSel();
       deselect();
-      lasso = { pid: e.pointerId, pts: [q] };
-      liveC.style.opacity = 1;
+      lasso = { pid: e.pointerId, pts: [q], d: `M${q.x.toFixed(1)} ${q.y.toFixed(1)}` };
+      lassoSvg.setAttribute('viewBox', `0 0 ${2 * W} ${page.height}`);
+      lassoSvg.style.height = page.height + 'px';
+      lassoPath.setAttribute('d', lasso.d);
+      lassoSvg.classList.add('on');
     }
+    const moveSelSoon = rafThrottle(() => { if (sel) positionSel(); });
     function lassoMove(e) {
       if (sel && sel.drag && e.pointerId === sel.drag.pid) {
         const q = pt(e);
         sel.dx = sel.drag.dx0 + q.x - sel.drag.x;
         sel.dy = sel.drag.dy0 + q.y - sel.drag.y;
-        positionSel();
+        moveSelSoon();
         return true;
       }
       if (lasso && e.pointerId === lasso.pid) {
         const evs = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
         for (const ev of evs.length ? evs : [e]) {
           const q = pt(ev), l = lasso.pts[lasso.pts.length - 1];
-          if (Math.abs(q.x - l.x) + Math.abs(q.y - l.y) > 1.5) lasso.pts.push(q);
+          if (Math.abs(q.x - l.x) + Math.abs(q.y - l.y) > 1.5) { lasso.pts.push(q); lasso.d += ` L${q.x.toFixed(1)} ${q.y.toFixed(1)}`; }
         }
         drawLasso();
         return true;
@@ -1088,23 +1189,24 @@
       return false;
     }
     function lassoUp(e) {
-      if (sel && sel.drag && e.pointerId === sel.drag.pid) { sel.drag = null; sel.outline.classList.remove('dragging'); return true; }
+      if (sel && sel.drag && e.pointerId === sel.drag.pid) { moveSelSoon.flush(); sel.drag = null; sel.outline.classList.remove('dragging'); return true; }
       if (lasso && e.pointerId === lasso.pid) {
         const pts = lasso.pts;
         lasso = null;
-        clearCtx(lctx);
+        drawLasso.cancel();
+        lassoSvg.classList.remove('on');
+        lassoPath.setAttribute('d', '');
         if (pts.length > 6) makeSel(pts);
         return true;
       }
       return false;
     }
     function makeSel(poly) {
-      let bx0 = Math.max(single ? side * W : 0, Math.min(...poly.map(q => q.x))), bx1 = Math.min(single ? side * W + W : 2 * W, Math.max(...poly.map(q => q.x)));
-      const by0 = Math.max(0, Math.min(...poly.map(q => q.y))), by1 = Math.min(page.height, Math.max(...poly.map(q => q.y)));
-      if (bx1 - bx0 < 4 || by1 - by0 < 4) return;
-      const piece = cutPiece(poly);
-      const X0 = Math.floor(bx0 * DPR), Y0 = Math.floor(by0 * DPR), Wd = Math.max(1, Math.ceil((bx1 - bx0) * DPR)), Hd = Math.max(1, Math.ceil((by1 - by0) * DPR));
-      const data = piece.getContext('2d').getImageData(X0, Y0, Wd, Hd).data;
+      const r = polyBox(poly);
+      if (!r) return;
+      const piece = cutPiece(poly, r, true);
+      const X0 = r.X, Y0 = r.Y, Wd = r.Wd, Hd = r.Hd;
+      const data = piece.getContext('2d').getImageData(0, 0, Wd, Hd).data;
       let mnx = Infinity, mny = Infinity, mxx = -1, mxy = -1;
       for (let y = 0; y < Hd; y++) for (let x = 0; x < Wd; x++) {
         if (data[(y * Wd + x) * 4 + 3] > 10) { if (x < mnx) mnx = x; if (x > mxx) mxx = x; if (y < mny) mny = y; if (y > mxy) mxy = y; }
@@ -1122,7 +1224,7 @@
         const ix = (X0 + mnx) / DPR - 2, iy = (Y0 + mny) / DPR - 2, iw = (mxx - mnx + 1) / DPR + 4, ih = (mxy - mny + 1) / DPR + 4;
         float = h('canvas', { class: 'lasso-float', style: { left: ix + 'px', top: iy + 'px', width: iw + 'px', height: ih + 'px' } });
         float.width = Math.ceil(iw * DPR); float.height = Math.ceil(ih * DPR);
-        float.getContext('2d').drawImage(piece, Math.round(ix * DPR), Math.round(iy * DPR), float.width, float.height, 0, 0, float.width, float.height);
+        float.getContext('2d').drawImage(piece, Math.round(ix * DPR) - X0, Math.round(iy * DPR) - Y0, float.width, float.height, 0, 0, float.width, float.height);
         spread.append(float);
         erasePoly(poly); // lift it off the paper while it floats
         box = { x0: ix, y0: iy, x1: ix + iw, y1: iy + ih };
@@ -1140,7 +1242,7 @@
         btn('copy', 'Duplicate', selDuplicate), btn('trash', 'Delete', selDelete, 'danger-text'), btn('check', 'Done', commitSel));
       const outline = h('div', { class: 'lasso-box', style: { left: box.x0 - 6 + 'px', top: box.y0 - 6 + 'px', width: box.x1 - box.x0 + 12 + 'px', height: box.y1 - box.y0 + 12 + 'px' } }, bar);
       spread.append(outline);
-      sel = { poly, dx: 0, dy: 0, float, outline, box, hasInk, items: items.map(it => ({ it, sx: (it.side || 0) * W + it.x, y: it.y })) };
+      sel = { poly, r, piece, dx: 0, dy: 0, float, outline, box, hasInk, items: items.map(it => ({ it, sx: (it.side || 0) * W + it.x, y: it.y })) };
       QD.sfx('pop');
     }
     function positionSel() {
@@ -1165,25 +1267,30 @@
     }
     function commitSel() {
       if (!sel) return;
+      moveSelSoon.cancel();
       const s = sel; sel = null;
+      positionSelFinal(s);
       dropSelUi(s);
-      if (Math.abs(s.dx) > 0.5 || Math.abs(s.dy) > 0.5) {
-        const o = { id: ++opSeq, tool: 'move', ink: s.hasInk, poly: s.poly, dx: s.dx, dy: s.dy, items: s.items.map(x => ({ id: x.it.id, dx: s.dx, dy: s.dy })) };
+      const moved = Math.abs(s.dx) > 0.5 || Math.abs(s.dy) > 0.5;
+      if (s.hasInk) pastePiece(s.piece, s.r, moved ? s.dx : 0, moved ? s.dy : 0); // drop the ink where it is now
+      if (moved) {
+        const o = { id: ++opSeq, tool: 'move', ink: s.hasInk, poly: s.poly, r: s.r, dx: s.dx, dy: s.dy, items: s.items.map(x => ({ id: x.it.id, dx: s.dx, dy: s.dy })) };
         ops.push(o); redo = [];
-        redrawInk();
         inkChanged(o);
-      } else redrawInk(); // put the lifted ink back
+        maybeCheckpoint();
+      }
     }
+    function positionSelFinal(s) { const keep = sel; sel = s; positionSel(); sel = keep; }
     function selDelete() {
       const s = sel;
       if (!s) return;
       sel = null;
       dropSelUi(s);
       if (s.hasInk) {
-        const o = { id: ++opSeq, tool: 'move', ink: true, del: true, poly: s.poly, dx: 0, dy: 0 };
+        const o = { id: ++opSeq, tool: 'move', ink: true, del: true, poly: s.poly, r: s.r, dx: 0, dy: 0 };
         ops.push(o); redo = [];
-        redrawInk(); inkChanged(o);
-      } else redrawInk();
+        inkChanged(o);
+      }
       if (s.items.length) removeItems(s.items.map(x => x.it.id));
       else { QD.sfx('del'); poof(s.poly); }
     }
@@ -1193,9 +1300,14 @@
       const off = 24;
       commitSel();
       if (s.hasInk) {
-        const o = { id: ++opSeq, tool: 'move', ink: true, copy: true, poly: s.poly.map(q => ({ x: q.x + s.dx, y: q.y + s.dy })), dx: off, dy: off };
-        ops.push(o); redo = [];
-        redrawInk(); inkChanged(o);
+        const poly = s.poly.map(q => ({ x: q.x + s.dx, y: q.y + s.dy }));
+        const r = polyBox(poly);
+        pastePiece(s.piece, s.r, s.dx + off, s.dy + off);
+        if (r) {
+          const o = { id: ++opSeq, tool: 'move', ink: true, copy: true, poly, r, dx: off, dy: off };
+          ops.push(o); redo = [];
+          inkChanged(o);
+        }
       }
       for (const x of s.items) {
         const c = JSON.parse(JSON.stringify(x.it));
@@ -1312,8 +1424,8 @@
       // capture on the spread (the item may hop to the other page while dragging)
       capture(e.pointerId);
       el.classList.add('dragging');
-      const move = ev => {
-        if (ev.pointerId !== e.pointerId || pinch) return;
+      const apply = rafThrottle(ev => {
+        if (!ev || pinch) return;
         const p = pt(ev), dx = p.x - start.x, dy = p.y - start.y;
         if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return;
         moved = true;
@@ -1338,9 +1450,11 @@
           if (it.type === 'note') it.h = Math.round(QD.clamp(o.h + ly, 90, 900));
         }
         placeEl(el, it);
-      };
+      });
+      const move = ev => { if (ev.pointerId === e.pointerId) apply(ev); };
       const up = ev => {
         if (ev.pointerId !== e.pointerId) return;
+        apply.flush();
         spread.removeEventListener('pointermove', move);
         spread.removeEventListener('pointerup', up);
         spread.removeEventListener('pointercancel', up);
@@ -1610,6 +1724,7 @@
     function startFlip(kind, corner) {
       if (flipping || op) return null;
       commitSel();
+      syncSoon.now();
       deselect();
       QD.closePopover();
       if (document.activeElement && spread.contains(document.activeElement)) document.activeElement.blur();
@@ -1718,6 +1833,7 @@
       const start = pt(e);
       const grab = { x: f.C.x - (start.x - offX), y: f.C.y - start.y };
       let last = { t: performance.now(), x: start.x }, vx = 0, moved = false;
+      const draw = rafThrottle(q => { if (q && flipping === f) flipUpdate(q); });
       const move = ev => {
         if (ev.pointerId !== e.pointerId) return;
         const p = pt(ev);
@@ -1725,10 +1841,11 @@
         const now = performance.now();
         vx = 0.7 * vx + 0.3 * ((p.x - last.x) / Math.max(1, now - last.t));
         last = { t: now, x: p.x };
-        flipUpdate({ x: p.x - offX + grab.x, y: p.y + grab.y });
+        draw({ x: p.x - offX + grab.x, y: p.y + grab.y });
       };
       const up = ev => {
         if (ev.pointerId !== e.pointerId) return;
+        draw.flush();
         el.removeEventListener('pointermove', move);
         el.removeEventListener('pointerup', up);
         el.removeEventListener('pointercancel', up);
@@ -1773,7 +1890,7 @@
         return;
       }
       if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); exportPdf(); return; }
-      if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); S.flush(page.id); QD.toast(page.draft ? 'Nothing to save yet' : 'Saved', { icon: 'check' }); return; }
+      if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); syncSoon.now(); S.flush(page.id); QD.toast(page.draft ? 'Nothing to save yet' : 'Saved', { icon: 'check' }); return; }
       if (mod && (e.key === '=' || e.key === '+' || e.key === '-' || e.key === '0')) { e.preventDefault(); if (e.key === '0') zoomTo(1); else setZoom(e.key === '-' ? -1 : 1); return; }
       if (editing) { if (e.key === 'Escape') a.blur(); return; }
       if (e.key === '\\') { e.preventDefault(); setFocus(!prefs.focus); return; }
@@ -1803,7 +1920,7 @@
     sizeCanvases();
     page.inks.forEach((id, i) => {
       const rec = id && S.media.get(id);
-      if (rec) createImageBitmap(rec.blob).then(img => { if (!destroyed) { baseImgs[i] = img; redrawInk(); } }).catch(() => {});
+      if (rec) createImageBitmap(rec.blob).then(img => { if (!destroyed) { baseImgs[i] = img; cp = null; redrawInk(); } }).catch(() => {});
     });
     if (!arrived.noAnim && lastShown && lastShown.id !== page.id) book.classList.add(page.date >= lastShown.date ? 'flip-next' : 'flip-prev');
     lastShown = { id: page.id, date: page.date };
@@ -1822,6 +1939,8 @@
     /* ===== teardown ===== */
     return () => {
       commitSel();
+      syncSoon.cancel();
+      if (S.pages.has(page.id) || !page.draft) syncBody();
       destroyed = true;
       if (flipping) cancelAnimationFrame(flipping.raf);
       offs.forEach(f => f());

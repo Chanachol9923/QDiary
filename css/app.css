@@ -976,6 +976,16 @@ div.p-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
 
 /* lasso selection */
+.lasso-path { position: absolute; left: 0; top: 0; width: 1200px; z-index: 9; pointer-events: none; overflow: visible; display: none; }
+.lasso-path.on { display: block; }
+.lasso-path path { fill: color-mix(in srgb, var(--accent) 9%, transparent); stroke: var(--accent); stroke-width: 2.2px; vector-effect: non-scaling-stroke; stroke-dasharray: 7 6; stroke-linejoin: round; animation: antsPath .6s linear infinite; }
+@keyframes antsPath { to { stroke-dashoffset: -13; } }
+.j-palette, .j-zoom { transition: opacity .18s; }
+.j-palette.ghost, .j-zoom.ghost { opacity: .18; pointer-events: none; }
+/* keep repaint work inside each page */
+.side { contain: layout paint; }
+.j-palette, .j-bar { contain: layout paint style; }
+@media (pointer: coarse) { .book-wrap { will-change: transform; } }
 .book[data-tool="lasso"] .p-live { cursor: crosshair; }
 .lasso-float { position: absolute; z-index: 6; pointer-events: none; filter: drop-shadow(0 4px 8px rgba(30, 15, 25, .28)); }
 .lasso-box { position: absolute; z-index: 7; pointer-events: none; border: 2px dashed var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius: 6px; animation: lassoIn .16s steps(3); }
@@ -1004,7 +1014,7 @@ div.p-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @keyframes wiggle { 0%, 100% { rotate: 0deg; } 25% { rotate: -7deg; } 75% { rotate: 7deg; } }
 @keyframes sway { 0%, 100% { rotate: -1.2deg; } 50% { rotate: 1.2deg; } }
 @keyframes settle { 0% { scale: 1.06; } 55% { scale: .97; } 100% { scale: 1; } }
-@keyframes peek { 0%, 86%, 100% { width: 22px; height: 22px; } 91% { width: 42px; height: 42px; } 95% { width: 30px; height: 30px; } }
+@keyframes peek { 0%, 100% { transform: scale(1); } 45% { transform: scale(1.7); } 70% { transform: scale(1.25); } }
 @keyframes ants { to { background-position: 12px 0, -12px 100%, 0 -12px, 100% 12px; } }
 
 .jb.hop .ic, .nav-item:hover .ic, .ins-tile:hover .ic { animation: hop .38s ease-out; }
@@ -1013,8 +1023,13 @@ div.p-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .btn:hover:not(:disabled) { translate: 0 -1px; }
 .brand:hover .brand-logo { animation: wiggle .45s steps(4); }
 .write-btn:hover .ic { animation: wiggle .5s steps(4); }
-.ribbon { transform-origin: 50% 0; animation: sway 5s ease-in-out infinite; }
-.c-br::before { animation: peek 7s ease-in-out 2.5s infinite; }
+.ribbon { transform-origin: 50% 0; animation: sway 1.6s ease-in-out 2; }
+/* the turnable corner peeks twice after the page opens (transform only — no layout work) */
+.corner::before { transition: transform .16s ease-out; }
+.c-tr::before { transform-origin: 100% 0; } .c-br::before { transform-origin: 100% 100%; }
+.c-tl::before { transform-origin: 0 0; } .c-bl::before { transform-origin: 0 100%; }
+.corner:hover::before { width: 26px; height: 26px; transform: scale(1.7); }
+.c-br::before { animation: peek 1.3s ease-in-out 2.2s 2; }
 .book.flipping .c-br::before, .book.pinching .c-br::before { animation: none; }
 .p-chip .emo { display: inline-block; animation: popIn2 .35s ease-out; }
 .p-stamp { transition: rotate .2s; }
